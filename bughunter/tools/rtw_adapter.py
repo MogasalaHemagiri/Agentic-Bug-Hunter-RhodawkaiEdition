@@ -307,7 +307,16 @@ def build_source_script(spec: CapabilitySpec, target: str, workdir: Path,
     inside the pre-populated workdir. Never runs reconFTW's argument parser,
     banner, modes, or its install.sh."""
     return (
-        "set -euo pipefail\n"
+        # Live-run fix: `set -u` killed the source-only subshell with rc=127 —
+        # reconFTW's Bash modules read uninitialized guard variables
+        # (lib/common.sh: _COMMON_SH_LOADED). Keep -e/-o pipefail, drop -u.
+        "set -eo pipefail\n"
+        # Live-run fix: pin reconFTW's lib/ + modules/ to $RTW_HOME. When
+        # reconftw.sh is sourced, $0 is the invoking bash (not the script), so
+        # reconFTW's own SCRIPTPATH derivation would resolve to the CWD or a
+        # stale /opt/reconftw install; exporting it explicitly makes the
+        # source-only load deterministic.
+        f"export SCRIPTPATH={shlex.quote(str(rtw_home()))}\n"
         f"source {shlex.quote(str(rtw_script()))} --source-only\n"
         f"source {shlex.quote(str(cfg))}\n"
         f"export ASN_ENUM=true SUBPERMUTE=true VIRTUALHOSTS=true "
@@ -679,17 +688,29 @@ def run_capability(capability_id: str, target: str,
     else:
         status = RESULT_COMPLETED_EMPTY
 
-    # Step 5 (post-call) — filter every output file to scope.
-    filter_stats = filter_outputs_to_scope(workdir, checker, target)
-    # Re-harvest: filtering may have emptied files.
-    outputs = harvest_outputs(workdir)
-    findings = findings_count(workdir, outputs)
-    if status == RESULT_COMPLETED_WITH_FINDINGS and findings == 0:
-        status = RESULT_COMPLETED_EMPTY
+    if rc != 0:
+        # Live-run fix: a failed function produced nothing. Never publish or
+        # count the pre-seeded inputs (e.g. subdomains/subdomains.txt) as
+        # findings — they would otherwise surface as findings_count and rows
+        # in the Recon Summary despite the non-zero exit.
+        outputs = []
+        findings = 0
+        filter_stats = {"files_filtered": 0, "lines_in": 0,
+                        "lines_kept": 0, "lines_dropped": 0}
+        published = []
+        standard_counts = {}
+    else:
+        # Step 5 (post-call) — filter every output file to scope.
+        filter_stats = filter_outputs_to_scope(workdir, checker, target)
+        # Re-harvest: filtering may have emptied files.
+        outputs = harvest_outputs(workdir)
+        findings = findings_count(workdir, outputs)
+        if status == RESULT_COMPLETED_WITH_FINDINGS and findings == 0:
+            status = RESULT_COMPLETED_EMPTY
 
-    published = publish_outputs(spec, target, workdir, recon_dir, outputs)
-    standard_counts = write_standard_outputs(recon_dir, spec.rtw_function,
-                                             workdir, outputs)
+        published = publish_outputs(spec, target, workdir, recon_dir, outputs)
+        standard_counts = write_standard_outputs(recon_dir, spec.rtw_function,
+                                                 workdir, outputs)
 
     entry = _entry(spec, target_host, digest, status, started_iso, argv=argv,
                    workdir=str(workdir), seeded=seeded, outputs=outputs,

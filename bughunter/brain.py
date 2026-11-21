@@ -38,6 +38,11 @@ API keys (env vars):
   REQUESTY_API_KEY    - Requesty (multi-model gateway, anthropic/claude-sonnet-4-6, etc.)
   REQUESTY_BASE_URL   - Requesty base URL (default: https://router.requesty.ai/v1,
                         EU: https://router.eu.requesty.ai/v1)
+  NVIDIA_API_KEY      — NVIDIA NIM (meta/llama-3.3-70b-instruct,
+                        qwen/qwen2.5-coder-32b-instruct, etc.)
+  NVIDIA_NIM_BASE_URL - NVIDIA NIM base URL (default:
+                        https://integrate.api.nvidia.com/v1; point it at a
+                        self-hosted NIM endpoint to override)
   OLLAMA_HOST         — Ollama base URL (default: http://localhost:11434)
 
 Default model priority (uses first available):
@@ -185,7 +190,7 @@ class LLMClient:
     # Priority: free-local first, free-cloud second, paid last
     PROVIDER_PRIORITY = [
         "ollama", "groq", "deepseek", "cerebras",
-        "gemini", "kimi", "mistral", "together",
+        "gemini", "kimi", "mistral", "nvidia", "together",
         "perplexity", "orcarouter", "openrouter", "fluxion",
         "claude", "openai", "grok",
     ]
@@ -204,6 +209,7 @@ class LLMClient:
         "antigravity": "gemini-3.8-flash-high",
         "kimi":        "moonshot-v1-128k",
         "mistral":     "mistral-large-latest",
+        "nvidia":      "meta/llama-3.3-70b-instruct",
         "together":    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "cerebras":    "llama3.3-70b",
         "perplexity":  "sonar-pro",
@@ -250,8 +256,12 @@ class LLMClient:
         "llama-3.1-8b-instant":    "openai/gpt-oss-20b",
     }
 
+    # NVIDIA NIM accepts friendly aliases; everything normalizes to "nvidia".
+    NIM_ALIASES = {"nim": "nvidia", "nvidia-nim": "nvidia", "nvidia_nim": "nvidia"}
+
     def __init__(self, provider: str | None = None, model: str | None = None):
         self.provider    = (provider or os.environ.get("BRAIN_PROVIDER", "")).lower()
+        self.provider    = self.NIM_ALIASES.get(self.provider, self.provider)
         self.model       = model or os.environ.get("BRAIN_MODEL") or None
         self._ollama     = None
         self._http       = None   # requests session for OpenAI-compatible APIs
@@ -273,6 +283,7 @@ class LLMClient:
         "gemini":      "GEMINI_API_KEY",
         "kimi":        "MOONSHOT_API_KEY",
         "mistral":     "MISTRAL_API_KEY",
+        "nvidia":      "NVIDIA_API_KEY",
         "together":    "TOGETHER_API_KEY",
         "cerebras":    "CEREBRAS_API_KEY",
         "perplexity":  "PERPLEXITY_API_KEY",
@@ -534,6 +545,22 @@ class LLMClient:
             self.available   = True
             self.description = "Requesty (multi-model gateway)"
 
+        elif provider == "nvidia":
+            # NVIDIA NIM — hosted catalog (https://build.nvidia.com) or any
+            # self-hosted NIM endpoint; both speak the OpenAI-compatible
+            # /chat/completions shape (same pattern as REQUESTY_BASE_URL).
+            key = os.environ.get("NVIDIA_API_KEY", "")
+            if not key:
+                return
+            import requests
+            self._http = requests.Session()
+            self._http.headers.update({"Authorization": f"Bearer {key}",
+                                       "Content-Type": "application/json"})
+            self._api_base   = (os.environ.get("NVIDIA_NIM_BASE_URL", "")
+                                or "https://integrate.api.nvidia.com/v1").rstrip("/")
+            self.available   = True
+            self.description = "NVIDIA NIM (hosted or self-hosted)"
+
         elif provider == "litellm":
             # LiteLLM routes by the model-name prefix (e.g. "anthropic/claude-...",
             # "gemini/gemini-...", "bedrock/...") and reads each target provider's
@@ -590,7 +617,7 @@ class LLMClient:
             elif self.provider in (
                 "openai", "grok", "groq", "deepseek",
                 "gemini", "kimi", "mistral", "together", "cerebras", "perplexity",
-                "openrouter", "orcarouter", "fluxion", "requesty",
+                "openrouter", "orcarouter", "fluxion", "requesty", "nvidia",
             ):
                 return self._chat_openai_compat(model, system, user, max_tokens, temperature)
         except Exception as e:
@@ -777,6 +804,15 @@ class LLMClient:
                 "google/gemini-2.0-flash-001",
                 "meta-llama/llama-3.3-70b-instruct",
                 "openrouter/auto",
+            ]
+        elif self.provider == "nvidia":
+            # Hosted NIM catalog highlights (https://build.nvidia.com). A
+            # self-hosted NIM endpoint exposes exactly its own loaded model.
+            return [
+                "meta/llama-3.3-70b-instruct",
+                "qwen/qwen2.5-coder-32b-instruct",
+                "nvidia/llama-3.1-nemotron-70b-instruct",
+                "deepseek-ai/deepseek-r1",
             ]
         elif self.provider == "orcarouter":
             return [
