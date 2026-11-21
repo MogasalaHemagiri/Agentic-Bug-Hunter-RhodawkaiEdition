@@ -16,6 +16,16 @@ for path in (PKG_ROOT, TOOLS_ROOT):
 from memory.schemas import CURRENT_SCHEMA_VERSION
 
 
+@pytest.fixture(autouse=True)
+def _isolated_bughunter_config(tmp_path, monkeypatch):
+    """Pin the saved-provider config (brain.py LLMClient) to a nonexistent
+    path so a developer's real ~/.bughunter/config.json can never leak into
+    unit tests. Tests that exercise config loading override
+    BUGHUNTER_CONFIG_FILE themselves."""
+    monkeypatch.setenv("BUGHUNTER_CONFIG_FILE",
+                       str(tmp_path / "no-config.json"))
+
+
 @pytest.fixture
 def tmp_hunt_dir(tmp_path):
     """Create a temporary hunt-memory directory structure."""

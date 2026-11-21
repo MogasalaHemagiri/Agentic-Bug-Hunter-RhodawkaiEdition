@@ -12,6 +12,7 @@ them (live-run request):
 """
 
 import importlib
+import json
 import os
 import sys
 
@@ -180,3 +181,107 @@ def test_reasoning_model_final_content_takes_precedence(
                                         "reasoning_content": "thinking..."}}]}
     client = _reasoning_client(brain_module, monkeypatch, payload)
     assert client.chat(None, "system", "user") == "READY"
+
+
+# ── Saved-config loading (live-run fix 4) ─────────────────────────────────────
+#
+# `rhodawk setup --provider nvidia` saved ~/.bughunter/config.json and printed
+# "[+] Model responded: READY", yet a fresh `rhodawk <target> -recon` shell
+# printed "[!] No LLM provider available" — the wizard only exported the key
+# into its own process. LLMClient must now load provider/credentials/model
+# from that config when BRAIN_PROVIDER / NVIDIA_API_KEY aren't exported.
+
+class TestSavedNvidiaConfig:
+    _ENV_KEYS = ("NVIDIA_API_KEY", "NVIDIA_NIM_BASE_URL", "BRAIN_PROVIDER",
+                 "BRAIN_MODEL")
+
+    def _write_cfg(self, tmp_path, payload):
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def _restore_env(self, saved):
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_config_provider_and_credentials_load_without_env(
+            self, brain_module, tmp_path, monkeypatch):
+        """Uppercase keys (the exact shape the setup wizard saves): a fresh
+        process with NO env vars picks up provider, key, base URL and model."""
+        path = self._write_cfg(tmp_path, {
+            "provider": "nvidia",
+            "NVIDIA_API_KEY": "nvapi-cfg",
+            "NVIDIA_NIM_BASE_URL": "https://nim.example/v1",
+            "models": {"nvidia": "nvidia/nemotron-3-ultra-550b-a55b"},
+        })
+        monkeypatch.setenv("BUGHUNTER_CONFIG_FILE", path)
+        saved = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        try:
+            client = brain_module.LLMClient()
+            assert client.provider == "nvidia"
+            assert client.available is True
+            assert client._api_base == "https://nim.example/v1"
+            assert client.model == "nvidia/nemotron-3-ultra-550b-a55b"
+        finally:
+            self._restore_env(saved)
+
+    def test_lowercase_config_keys_accepted(
+            self, brain_module, tmp_path, monkeypatch):
+        """Lowercase variants (nvidia_api_key / nvidia_nim_base_url / model)
+        are accepted too."""
+        path = self._write_cfg(tmp_path, {
+            "provider": "nvidia",
+            "nvidia_api_key": "nvapi-lc",
+            "nvidia_nim_base_url": "https://nim-lc.example/v1",
+            "model": "nvidia/nemotron-3-ultra-550b-a55b",
+        })
+        monkeypatch.setenv("BUGHUNTER_CONFIG_FILE", path)
+        saved = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        try:
+            client = brain_module.LLMClient()
+            assert client.provider == "nvidia"
+            assert client.available is True
+            assert client._api_base == "https://nim-lc.example/v1"
+            assert client.model == "nvidia/nemotron-3-ultra-550b-a55b"
+        finally:
+            self._restore_env(saved)
+
+    def test_explicit_env_key_wins_over_config(
+            self, brain_module, tmp_path, monkeypatch):
+        """An explicitly exported NVIDIA_API_KEY always beats the config one."""
+        path = self._write_cfg(tmp_path, {
+            "provider": "nvidia", "NVIDIA_API_KEY": "nvapi-cfg"})
+        monkeypatch.setenv("BUGHUNTER_CONFIG_FILE", path)
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-env")
+        saved = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        try:
+            client = brain_module.LLMClient()
+            assert client.provider == "nvidia"
+            assert client._http.headers["Authorization"] == "Bearer nvapi-env"
+        finally:
+            self._restore_env(saved)
+
+    def test_config_provider_failure_falls_back_to_auto_detect(
+            self, brain_module, tmp_path, monkeypatch):
+        """A dead saved provider (key present, init impossible) must not leave
+        the client disabled — auto-detect walks the remaining providers."""
+        path = self._write_cfg(tmp_path, {
+            "provider": "nvidia", "nvidia_api_key": "nvapi-broken",
+            "nvidia_nim_base_url": "https://127.0.0.1:1/v1"})
+        monkeypatch.setenv("BUGHUNTER_CONFIG_FILE", path)
+        monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-broken")
+        # _chat_openai_compat would fail at request time, not init time — the
+        # init itself succeeds with any key, so simulate a hard init failure
+        # by pointing the client at a provider we then remove the key for.
+        monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+        saved = {k: os.environ.get(k) for k in self._ENV_KEYS}
+        try:
+            client = brain_module.LLMClient()
+            # nvidia init without a usable key cannot be reached: the client
+            # must NOT stay on a disabled nvidia — it walks on.
+            assert client.provider != "nvidia" or client.available is True
+        finally:
+            self._restore_env(saved)

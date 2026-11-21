@@ -131,6 +131,98 @@ class TestClassifyHost:
             cls, got = rf.classify_host(host)
             assert cls == rf.CLASS_SAAS and got == provider
 
+    def test_cdn_via_raw_httpx_line_tech_anywhere(self):
+        """Live-run fix 2: rhodawkai.com sits on Vercel's apex A-record (no
+        CNAME), with the tech tag buried in the httpx line. The evidence is
+        the RAW line, so the tag is found wherever the column order puts it —
+        and the user's exact provider list all classify as CDN_EDGE."""
+        raw = "https://rhodawkai.com [200] [5180] [RhodawkAI] [HSTS,Vercel]"
+        assert rf.classify_host("rhodawkai.com", tech=raw) == \
+            (rf.CLASS_CDN_EDGE, "Vercel")
+        for token, provider in (("cloudflare", "Cloudflare"),
+                                ("fastly", "Fastly"),
+                                ("akamai", "Akamai"),
+                                ("cloudfront", "CloudFront"),
+                                ("netlify", "Netlify"),
+                                ("imperva", "Imperva")):
+            cls, got = rf.classify_host("h.example", tech=f"[HSTS,{provider}]")
+            assert cls == rf.CLASS_CDN_EDGE and got == provider, token
+
+
+def _write_recon_skeleton(tmp_path, name):
+    rd = tmp_path / "recon" / name
+    for sub in ("subdomains", "live", "ports", "urls", "js", "hosts"):
+        (rd / sub).mkdir(parents=True)
+    return rd
+
+
+class TestLiveHostIngest:
+    def test_bare_urls_live_hosts_and_classes_populate_hosts(
+            self, tmp_path, isolated_home):
+        """Live-run fix 3 (hosts=0): a real httpx may emit the
+        [status][length][title][tech] column order the old positional regex
+        mis-parsed, or bare URLs when -tech-detect is unsupported — and some
+        runs only write live/live_hosts.txt + hosts/host_classes.txt. Every
+        shape must yield host rows with counts populated."""
+        rd = _write_recon_skeleton(tmp_path, "bare.example.com")
+        write(rd, "live/httpx_full.txt",
+              "https://bare.example.com [200] [5180] [Bare] [HSTS,Vercel]\n"
+              "https://plain.example.com\n")
+        write(rd, "live/live_hosts.txt", "extra.example.com\n")
+        write(rd, "live/urls.txt",
+              "https://bare.example.com\nhttps://plain.example.com\n")
+        write(rd, "hosts/host_classes.txt",
+              "bare.example.com\t76.76.21.21\tCDN_EDGE\tVercel\n"
+              "plain.example.com\t\tFIRST_PARTY_ORIGIN\t\n"
+              "extra.example.com\t\tFIRST_PARTY_ORIGIN\t\n")
+        truth, _ = rf.fuse(rd, "bare.example.com")
+        hosts = {h["host"]: h for h in truth["hosts"]}
+        assert len(hosts) == 3
+        c = truth["counts"]
+        assert c["live_hosts"] == 3
+        assert c["cdn_edges"] == 1
+        assert c["unique_host_clusters"] >= 1
+        # Real httpx column order parses cleanly now.
+        bare = hosts["bare.example.com"]
+        assert bare["status_code"] == 200
+        assert bare["content_length"] == 5180
+        assert bare["title"] == "Bare"
+        assert "Vercel" in bare["tech"] or "HSTS" in bare["tech"]
+        # host_classes.txt wins for the asset class; class file hosts are
+        # ingested even without any httpx metadata.
+        assert bare["asset_class"] == rf.CLASS_CDN_EDGE
+        assert hosts["extra.example.com"]["asset_class"] == rf.CLASS_ORIGIN
+        assert "live/live_hosts.txt" in hosts["extra.example.com"]["discovered_by"]
+        # The only resolved IP (76.76.21.21) belongs to the CDN edge; the
+        # first-party rows here carry no resolved A records.
+        assert truth["counts"]["origin_ips"] == 0
+
+    def test_parse_httpx_line_both_column_orders(self):
+        a = rf.parse_httpx_line(
+            "https://h.example [200] [Welcome] [nginx] [2048]")
+        b = rf.parse_httpx_line(
+            "https://h.example [200] [2048] [Welcome] [HSTS,Vercel]")
+        for rec in (a, b):
+            assert rec["status_code"] == 200
+            assert rec["title"] == "Welcome"
+            assert rec["content_length"] == 2048
+        assert a["tech"] == ["nginx"]
+        assert b["tech"] == ["HSTS", "Vercel"]
+        assert rf.parse_httpx_line("https://h.example") is None
+
+    def test_classify_uses_raw_line_evidence_without_classes_file(
+            self, tmp_path, isolated_home):
+        """No host_classes.txt yet (fresh Phase 2.5): the raw httpx line's
+        Vercel tag alone must classify the apex host as CDN_EDGE."""
+        rd = _write_recon_skeleton(tmp_path, "rhodawkai.example")
+        write(rd, "live/httpx_full.txt",
+              "https://rhodawkai.example [200] [5180] [RhodawkAI] [HSTS,Vercel]\n")
+        write(rd, "live/urls.txt", "https://rhodawkai.example\n")
+        counts = rf.classify_recon_dir(rd)
+        assert counts[rf.CLASS_CDN_EDGE] == 1
+        assert counts[rf.CLASS_ORIGIN] == 0
+        assert (rd / "hosts" / "origin_targets.txt").read_text() == ""
+
 
 class TestSimHashClustering:
     @staticmethod
