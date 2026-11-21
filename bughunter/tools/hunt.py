@@ -1103,8 +1103,10 @@ Examples:
     if _SCOPE_CHECKER is not None:
         log("info", f"Scope enforcement ON: {', '.join(scope_domains)}")
     elif _will_send_traffic:
-        log("warn", "Scope enforcement is OFF — no --scope-domain given. Outbound traffic "
-                    "will NOT be scope-filtered. Pass --scope-domain to enforce.")
+        log("warn", "Scope enforcement is OFF — no --scope-domain given. The recon "
+                    "engine's pre-flight scope gate will BLOCK the run (fail closed: "
+                    "0 packets sent, exit 3). Pass --scope-domain to enforce, or "
+                    "run the engine directly with --no-scope-check for demo testing.")
 
     # Target selection only
     if args.select_targets:

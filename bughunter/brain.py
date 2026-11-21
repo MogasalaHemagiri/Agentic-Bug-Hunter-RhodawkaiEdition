@@ -476,7 +476,7 @@ class LLMClient:
             self._http.headers.update({
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Awarexone/Agentic-Bug-Hunter",
+                "HTTP-Referer": "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition",
                 "X-Title": "BugHunter",
             })
             self._api_base   = "https://openrouter.ai/api/v1"
@@ -493,7 +493,7 @@ class LLMClient:
             self._http.headers.update({
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Awarexone/Agentic-Bug-Hunter",
+                "HTTP-Referer": "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition",
                 "X-Title": "BugHunter",
             })
             self._api_base   = "https://api.orcarouter.ai/v1"
@@ -509,7 +509,7 @@ class LLMClient:
             self._http.headers.update({
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Awarexone/Agentic-Bug-Hunter",
+                "HTTP-Referer": "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition",
                 "X-Title": "BugHunter",
             })
             self._api_base   = "https://fluxionai.world/v1"
@@ -526,7 +526,7 @@ class LLMClient:
             self._http.headers.update({
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/Awarexone/Agentic-Bug-Hunter",
+                "HTTP-Referer": "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition",
                 "X-Title": "BugHunter",
             })
             self._api_base   = (os.environ.get("REQUESTY_BASE_URL", "")

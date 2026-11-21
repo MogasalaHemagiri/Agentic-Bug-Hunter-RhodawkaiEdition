@@ -241,6 +241,65 @@ if [ "$QUICK_MODE" = "--normalize-only" ] || [ "${BB_NORMALIZE_ONLY:-0}" = "1" ]
     exit 0
 fi
 
+# ============================================================
+# Pre-flight scope gate (RhodawkAI Edition, live-run Fix 1 — fail-closed)
+# Runs BEFORE any network activity (the DNS wildcard pre-check below and
+# Phase 1 subfinder/crt.sh/wayback), so an unscoped or out-of-scope target
+# costs 0 packets sent and 0 tools executed. Rules:
+#   --no-scope-check    explicit demo opt-out — gate skipped (loud warning)
+#   IP/CIDR/local       self-scoped to the target itself — gate satisfied
+#   domain-list file    the file IS the pre-resolved scope list — satisfied
+#   domain target       requires >=1 --scope-domain pattern AND ScopeChecker
+#                       must pass; otherwise: audited + exit 3 immediately.
+# ============================================================
+_abh_audit_scope_block() {
+    # Reuse the adapter's schema-validated audit writer; if the adapter cannot
+    # run, append the same JSON fields it would (make_audit_entry fallback).
+    if python3 "$RTW_ADAPTER" audit-block --target "$TARGET" --reason "$1" \
+        >/dev/null 2>&1; then
+        return 0
+    fi
+    local _hm="${BUGHUNTER_HOME:-$HOME/.bughunter}/hunt-memory"
+    mkdir -p "$_hm" 2>/dev/null || return 0
+    printf '{"ts":"%s","url":"https://%s","method":"GET","scope_check":"fail","error":"recon_engine.sh: %s","schema_version":1}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TARGET" "$1" >> "$_hm/audit.jsonl" 2>/dev/null || true
+}
+
+SCOPE_GATE_BLOCK=""
+if [ "$SCOPE_OPT_OUT" = "1" ]; then
+    log_warn "Scope gate: --no-scope-check opt-out — running UNSCOPED (demo/testing only)"
+elif [ "$TARGET_TYPE" != "domain" ]; then
+    log_info "Scope gate: target type '$TARGET_TYPE' self-scopes to the target itself"
+elif [ ${#SCOPE_DOMAIN_ARGS[@]} -eq 0 ]; then
+    SCOPE_GATE_BLOCK="no --scope-domain pattern provided (fail-closed pre-flight gate)"
+else
+    SC_CHECK_ARGS=()
+    # Repeatable and comma-separated patterns are both accepted (same
+    # flattening the rtw_adapter applies before its own ScopeChecker call).
+    for _p in ${SCOPE_DOMAIN_ARGS[@]+"${SCOPE_DOMAIN_ARGS[@]}"}; do
+        IFS=',' read -r -a _sc_parts <<< "$_p"
+        for _c in "${_sc_parts[@]}"; do
+            [ -n "$_c" ] && SC_CHECK_ARGS+=(--domain "$_c")
+        done
+    done
+    for _p in ${SCOPE_EXCLUDE_ARGS[@]+"${SCOPE_EXCLUDE_ARGS[@]}"}; do
+        IFS=',' read -r -a _sc_parts <<< "$_p"
+        for _c in "${_sc_parts[@]}"; do
+            [ -n "$_c" ] && SC_CHECK_ARGS+=(--exclude-domain "$_c")
+        done
+    done
+    if ! python3 "$BASE_DIR/tools/scope_checker.py" \
+            ${SC_CHECK_ARGS[@]+"${SC_CHECK_ARGS[@]}"} "$TARGET" >/dev/null 2>&1; then
+        SCOPE_GATE_BLOCK="target '$TARGET' is outside the provided scope patterns"
+    fi
+fi
+if [ -n "$SCOPE_GATE_BLOCK" ]; then
+    log_err "SCOPE BLOCK: $SCOPE_GATE_BLOCK"
+    log_err "0 packets sent, 0 tools executed. Pass --scope-domain PATTERN (repeatable) or --no-scope-check for local demo testing."
+    _abh_audit_scope_block "$SCOPE_GATE_BLOCK"
+    exit 3
+fi
+
 # For IP/CIDR/local: always scope-lock — no subdomain enum needed
 if [ "$TARGET_TYPE" = "ip" ] || [ "$TARGET_TYPE" = "cidr" ] || [ "$TARGET_TYPE" = "local" ]; then
     SCOPE_LOCK=1
@@ -390,7 +449,8 @@ else
 # Subfinder (passive, fast)
 if command -v subfinder &>/dev/null; then
     log_step "Running subfinder..."
-    subfinder -d "$TARGET" -silent -all -t 50 -o "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || true
+    # Bounded (live-run Fix 1b): passive enum must never hang the run.
+    timeout 180 subfinder -d "$TARGET" -silent -all -t 50 -o "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || true
     log_done "subfinder: $(wc -l < "$RECON_DIR/subdomains/subfinder.txt" 2>/dev/null || echo 0) subdomains"
 else
     warn_missing subfinder "subdomain enumeration"
@@ -409,7 +469,7 @@ fi
 
 # crt.sh (certificate transparency)
 log_step "Querying crt.sh..."
-curl -s "https://crt.sh/?q=%25.$TARGET&output=json" 2>/dev/null \
+timeout 60 curl -s "https://crt.sh/?q=%25.$TARGET&output=json" 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -430,7 +490,7 @@ log_done "crt.sh: $(wc -l < "$RECON_DIR/subdomains/crtsh.txt" 2>/dev/null || ech
 
 # Wayback subdomains
 log_step "Querying Wayback Machine for subdomains..."
-curl -s "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" 2>/dev/null \
+timeout 60 curl -s "https://web.archive.org/cdx/search/cdx?url=*.$TARGET/*&output=text&fl=original&collapse=urlkey" 2>/dev/null \
     | sed -nE "s|.*://([a-zA-Z0-9._-]+\.$TARGET).*|\1|p" \
     | sort -u > "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || true
 log_done "wayback: $(wc -l < "$RECON_DIR/subdomains/wayback_subs.txt" 2>/dev/null || echo 0) subdomains"
