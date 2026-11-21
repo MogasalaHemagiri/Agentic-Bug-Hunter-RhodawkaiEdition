@@ -83,7 +83,8 @@ def rtw_env(tmp_path, monkeypatch):
     # root VPS) can never turn these unit tests into live network runs or
     # hangs. The engine treats them exactly like absent/empty tools.
     for _tool in ("subfinder", "amass", "httpx", "nmap", "dig", "katana",
-                  "gau", "ffuf", "nuclei"):
+                  "gau", "ffuf", "nuclei", "naabu", "dnsx", "waybackurls",
+                  "anew"):
         _stub = stub_bin / _tool
         _stub.write_text("#!/bin/bash\nexit 0\n")
         _stub.chmod(0o755)
@@ -110,6 +111,13 @@ def rtw_env(tmp_path, monkeypatch):
         "exit 0\n"
     )
     httpx_stub.chmod(0o755)
+    # Live-run fix (issue 5, EXIT_CODE=124): recon_engine.sh re-prepends
+    # ~/go/bin:/usr/local/bin to PATH and _resolve_pd_httpx probes
+    # /usr/local/bin/httpx directly — on a root VPS those host binaries
+    # shadow these stubs and the engine hangs on real network probes. Pin
+    # both knobs to this sandbox.
+    monkeypatch.setenv("BUGHUNTER_NO_BIN_PATH", "1")
+    monkeypatch.setenv("BUGHUNTER_HTTPX_BIN", str(httpx_stub))
     monkeypatch.setenv("PATH", f"{stub_bin}:{os.environ.get('PATH', '')}")
 
     home = tmp_path / "bughunter-home"

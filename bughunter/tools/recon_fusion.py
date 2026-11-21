@@ -73,7 +73,15 @@ _CDN_SUFFIXES: Tuple[Tuple[str, str], ...] = (
 )
 _CDN_TECH_TOKENS: Tuple[str, ...] = (
     "cloudflare", "vercel", "akamai", "fastly", "cloudfront", "cdn77",
+    "netlify", "imperva", "incapsula",
 )
+# Proper vendor casing for tech-token matches (token.title() would yield
+# "Cloudfront"/"Cdn77").
+_CDN_TECH_PROVIDER: Dict[str, str] = {
+    "cloudflare": "Cloudflare", "vercel": "Vercel", "akamai": "Akamai",
+    "fastly": "Fastly", "cloudfront": "CloudFront", "cdn77": "CDN77",
+    "netlify": "Netlify", "imperva": "Imperva", "incapsula": "Imperva",
+}
 # Third-party SaaS endpoints: probing them tests the vendor, not the program.
 _SAAS_SUFFIXES: Tuple[Tuple[str, str], ...] = (
     (".myshopify.com", "Shopify"), (".shopify.com", "Shopify"),
@@ -102,12 +110,7 @@ _TRACKING_KEY_EXACT = {
     "_ga", "igshid", "vero_id", "wickedid",
 }
 
-_HTTPX_LINE_RE = re.compile(
-    r"^(?P<url>\S+)\s+\[(?P<status>\d{3})\]"
-    r"(?:\s+\[(?P<title>[^\]]*)\])?"
-    r"(?:\s+\[(?P<tech>[^\]]*)\])?"
-    r"(?:\s+\[(?P<cl>\d+)\])?\s*$"
-)
+_HTTPX_LINE_RE = re.compile(r"^(\S+)\s+((?:\[[^\]]*\]\s*)+)$")
 _NMAP_GREP_RE = re.compile(r"Host:\s+(?P<host>\S+)\s+\(\)\s+Ports:\s+(?P<ports>.*)")
 _PORT_FIELD_RE = re.compile(r"^(?P<port>\d+)/open/(?P<proto>\w+)//(?P<svc>[^/]*)")
 
@@ -174,7 +177,7 @@ def classify_host(host: str, cname: str = "", tech: str = "") -> Tuple[str, str]
             return CLASS_CDN_EDGE, provider
     for token in _CDN_TECH_TOKENS:
         if token in tech_n:
-            return CLASS_CDN_EDGE, token.title()
+            return CLASS_CDN_EDGE, _CDN_TECH_PROVIDER.get(token, token.title())
     return CLASS_ORIGIN, ""
 
 
@@ -261,18 +264,42 @@ def _glob_one(recon_dir: Path, pattern: str) -> List[Path]:
 
 
 def parse_httpx_line(line: str) -> Optional[dict]:
-    """`https://h [200] [Title] [tech1,tech2] [123]` -> record (or None)."""
+    """Parse a PD httpx output line into a record (None for bare lines).
+
+    Live-run fix: the bracket column order varies by httpx version —
+    `https://h [200] [Title] [Tech] [5180]` and
+    `https://h [200] [5180] [Title] [HSTS,Vercel]` are both seen in the wild.
+    The old positional [title][tech][cl] assumption mis-parsed the second
+    order (and hosts=0 followed). This parser is order-agnostic: the first
+    bracket group must be the 3-digit status; a trailing pure-digit group is
+    the content length; a LEADING pure-digit group after status is the
+    content length too; the first remaining text group is the title and the
+    rest are tech tags."""
     match = _HTTPX_LINE_RE.match(line.strip())
     if not match:
         return None
-    tech = [t.strip() for t in (match.group("tech") or "").split(",") if t.strip()]
-    cl = match.group("cl")
+    url = match.group(1)
+    groups = re.findall(r"\[([^\]]*)\]", match.group(2))
+    if not groups or not groups[0].isdigit() or len(groups[0]) != 3:
+        return None
+    status_code = int(groups[0])
+    rest = groups[1:]
+    content_length = None
+    if rest and rest[-1].isdigit():
+        content_length = int(rest[-1])
+        rest = rest[:-1]
+    while rest and rest[0].isdigit() and content_length is None:
+        content_length = int(rest[0])
+        rest = rest[1:]
+    title = rest[0].strip() if rest else ""
+    tech = [t.strip() for t in ",".join(rest[1:]).split(",") if t.strip()] \
+        if len(rest) > 1 else []
     return {
-        "url": match.group("url"),
-        "status_code": int(match.group("status")),
-        "title": (match.group("title") or "").strip(),
+        "url": url,
+        "status_code": status_code,
+        "title": title,
         "tech": tech,
-        "content_length": int(cl) if cl and cl.isdigit() else None,
+        "content_length": content_length,
     }
 
 
@@ -305,6 +332,42 @@ def _host_key(target: str) -> str:
 
 
 # ── Fusion ────────────────────────────────────────────────────────────────────
+
+def _live_host_records(recon_dir: Path) -> List[dict]:
+    """Collect live-host evidence from live/httpx_full.txt, live/live_hosts.txt
+    and live/urls.txt into one record per host.
+
+    Live-run fix (hosts=0): recon_engine.sh writes live/ evidence under the
+    filenames above, and a real httpx run may emit lines the rich parser
+    rejects (bare URLs when -tech-detect is unsupported, or a bracket order
+    the old positional regex mis-read). Every line now yields a host record —
+    rich metadata when parseable, bare host otherwise — and the RAW line is
+    kept as classification evidence so a tech tag anywhere in it
+    ([HSTS,Vercel] on an apex A-record with no CNAME) drives CDN_EDGE."""
+    records: Dict[str, dict] = {}
+
+    def _row(host: str) -> dict:
+        return records.setdefault(host, {
+            "host": host, "status_code": None, "title": "", "tech": [],
+            "content_length": None, "sources": set(), "raw": [],
+        })
+
+    for rel in ("live/httpx_full.txt", "live/live_hosts.txt", "live/urls.txt"):
+        for raw in _read_lines(recon_dir / rel):
+            rec = parse_httpx_line(raw)
+            bare = raw.split()[0] if raw.split() else ""
+            host = _strip_host(rec["url"] if rec else bare)
+            if not host:
+                continue
+            row = _row(host)
+            row["sources"].add(rel)   # full artifact path, e.g. live/httpx_full.txt
+            row["raw"].append(raw)
+            if rec and row["status_code"] is None:
+                row.update(status_code=rec["status_code"], title=rec["title"],
+                           tech=rec["tech"],
+                           content_length=rec["content_length"])
+    return [records[host] for host in sorted(records)]
+
 
 def load_resolution(recon_dir: Path) -> Dict[str, dict]:
     """hosts/resolution.txt written by recon_engine.sh Phase 2.5:
@@ -340,25 +403,20 @@ def classify_recon_dir(recon_dir: Path, limit: int = 100) -> Dict[str, int]:
     """Phase 2.5 helper: resolve + classify live hosts and write
     hosts/host_classes.txt + hosts/origin_targets.txt. Resolution evidence
     comes from hosts/resolution.txt (dig output captured by bash — this
-    module never touches the network)."""
-    urls = _read_lines(recon_dir / "live" / "urls.txt")
+    module never touches the network). Classification evidence is the RAW
+    httpx line, so a tech tag anywhere in it (Vercel apex A-record with no
+    CNAME) classifies the host as CDN_EDGE (live-run fix 2)."""
+    records = _live_host_records(recon_dir)
     resolution = load_resolution(recon_dir)
-    httpx_map: Dict[str, dict] = {}
-    for line in _read_lines(recon_dir / "live" / "httpx_full.txt"):
-        rec = parse_httpx_line(line)
-        if rec:
-            httpx_map[_strip_host(rec["url"])] = rec
 
     rows: List[str] = []
     origin_targets: Set[str] = set()
     counts = {CLASS_CDN_EDGE: 0, CLASS_SAAS: 0, CLASS_ORIGIN: 0}
-    for live_url in urls[:limit]:
-        host = _strip_host(live_url)
-        if not host:
-            continue
+    for rec in records[:limit]:
+        host = rec["host"]
         res = resolution.get(host, {})
-        tech = ",".join(httpx_map.get(host, {}).get("tech", []))
-        asset_class, provider = classify_host(host, res.get("cname", ""), tech)
+        evidence = " ".join(rec["raw"])
+        asset_class, provider = classify_host(host, res.get("cname", ""), evidence)
         ip = res.get("ip", "")
         rows.append(f"{host}\t{ip}\t{asset_class}\t{provider}")
         counts[asset_class] += 1
@@ -397,22 +455,20 @@ def build_truth(recon_dir: Path, target: str,
                 sub_provenance.setdefault(host, set()).add(label)
     subdomains = sorted(sub_provenance)
 
-    # Live hosts (Phase 2 httpx) — the hosts[] rows.
+    # Live hosts (Phase 2 httpx + live/ evidence) — the hosts[] rows. The RAW
+    # httpx line is the classification evidence so tech tags drive CDN_EDGE
+    # regardless of the httpx output column order (live-run fixes 2+3).
     hosts: List[dict] = []
-    httpx_lines = _read_lines(recon_dir / "live" / "httpx_full.txt")
-    for line in httpx_lines:
-        rec = parse_httpx_line(line)
-        if not rec:
-            continue
-        host = _strip_host(rec["url"])
+    for rec in _live_host_records(recon_dir):
+        host = rec["host"]
         res = resolution.get(host, {})
         cls = classes.get(host)
         if cls and cls.get("asset_class"):
             asset_class, provider = cls["asset_class"], cls.get("cdn_provider", "")
         else:
             asset_class, provider = classify_host(host, res.get("cname", ""),
-                                                  ",".join(rec["tech"]))
-        discovered = {"live/httpx_full.txt"} | sub_provenance.get(host, set())
+                                                  " ".join(rec["raw"]))
+        discovered = set(rec["sources"]) | sub_provenance.get(host, set())
         hosts.append({
             "host": host,
             "ips": [res["ip"]] if res.get("ip") else [],

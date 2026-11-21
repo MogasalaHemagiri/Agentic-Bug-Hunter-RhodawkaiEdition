@@ -748,6 +748,12 @@ def run_capability(capability_id: str, target: str,
     argv = build_cli_command(spec, target, workdir, cfg)
 
     child_env = env or os.environ.copy()
+    # Live-run fix: reconftw.sh resolves its lib/ + modules/ base from
+    # $SCRIPTPATH. When the invoking shell carried a stale SCRIPTPATH (or
+    # reconFTW's compiled-in default /opt/reconftw), sub_permut and
+    # tls_ip_pivots sourced /opt/reconftw/modules/utils.sh instead of the
+    # RTW_HOME checkout. Pin it to OUR RTW_HOME on every delegated call.
+    child_env["SCRIPTPATH"] = str(rtw_script().parent)
     started_iso = _utcnow()
     t0 = time.time()
     try:

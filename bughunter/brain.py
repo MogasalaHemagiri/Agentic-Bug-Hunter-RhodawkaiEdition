@@ -267,11 +267,38 @@ class LLMClient:
         self._http       = None   # requests session for OpenAI-compatible APIs
         self.available   = False
         self.description = ""
+        # Live-run fix: ~/.bughunter/config.json (written by `bughunter setup`)
+        # is the durable provider config — provider, API key, NIM base URL and
+        # model. The setup wizard only exported those into ITS OWN process, so
+        # a fresh `rhodawk <target> -recon` shell reached _init_provider with
+        # no key in the environment and printed "No LLM provider available".
+        # Load the saved config here (see _load_saved_config / _saved_value).
+        self._saved_cfg  = self._load_saved_config()
+
+        saved_provider = self.NIM_ALIASES.get(
+            str(self._saved_cfg.get("provider", "")).lower(),
+            str(self._saved_cfg.get("provider", "")).lower())
+        if not self.provider and saved_provider:
+            self.provider = saved_provider
 
         if not self.provider:
             self.provider = self._auto_detect()
         else:
             self._init_provider(self.provider)
+            if not self.available and saved_provider == self.provider:
+                # The configured provider failed to initialize (bad key, dead
+                # endpoint) — fall back to the auto-detect walk, exactly like
+                # a box without any saved config would.
+                self.provider = self._auto_detect()
+
+        # Model from config: cfg["model"] (global) or cfg["models"][provider]
+        # (the shape the setup wizard saves). Explicit BRAIN_MODEL/--model win.
+        if not self.model:
+            models = self._saved_cfg.get("models")
+            self.model = (self._saved_cfg.get("model")
+                          or (models.get(self.provider)
+                              if isinstance(models, dict) else None)
+                          or None)
 
     # Env var a provider's API key is read from; keyed for quick lookup.
     PROVIDER_KEY_ENV = {
@@ -296,6 +323,33 @@ class LLMClient:
         "litellm":     "LITELLM_API_KEY",
     }
 
+    @staticmethod
+    def _load_saved_config() -> dict:
+        """Load the provider config saved by `bughunter setup` — the same file
+        engine.py writes (Path.home()/.bughunter/config.json). BUGHUNTER_CONFIG_FILE
+        overrides the path for tests/CI. Accepts both the uppercase keys the
+        wizard saves (NVIDIA_API_KEY, NVIDIA_NIM_BASE_URL) and the lowercase
+        variants (nvidia_api_key, nvidia_nim_base_url). Never raises."""
+        path = (os.environ.get("BUGHUNTER_CONFIG_FILE")
+                or str(Path.home() / ".bughunter" / "config.json"))
+        try:
+            cfg = json.loads(Path(path).read_text(encoding="utf-8"))
+            return cfg if isinstance(cfg, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _saved_value(self, *names: str) -> str:
+        """First non-empty saved-config value among `names` ("" if none).
+        Safe on clients built via __new__ (no _saved_cfg attribute)."""
+        cfg = getattr(self, "_saved_cfg", None)
+        if not isinstance(cfg, dict):
+            return ""
+        for name in names:
+            value = cfg.get(name)
+            if value:
+                return str(value)
+        return ""
+
     def _auto_detect(self) -> str:
         # Front-load cloud providers whose API keys are set so users with
         # only ANTHROPIC_API_KEY don't wait on an Ollama probe that will
@@ -317,6 +371,17 @@ class LLMClient:
 
     def _init_provider(self, provider: str) -> None:
         self.available = False
+        # Live-run fix: a key saved by `setup` (cfg["NVIDIA_API_KEY"],
+        # cfg["GROQ_API_KEY"], ...) must work in a fresh shell even when the
+        # env var isn't exported — the setup wizard only ever exported it in
+        # its own process. setdefault keeps explicitly exported vars winning;
+        # lowercase config variants are accepted too.
+        env_name = self.PROVIDER_KEY_ENV.get(provider, "")
+        if env_name and not os.environ.get(env_name):
+            saved_key = self._saved_value(env_name, env_name.lower(),
+                                          f"{provider}_api_key")
+            if saved_key:
+                os.environ[env_name] = saved_key
         if provider == "ollama":
             if _ollama_lib is None:
                 return
@@ -557,6 +622,8 @@ class LLMClient:
             self._http.headers.update({"Authorization": f"Bearer {key}",
                                        "Content-Type": "application/json"})
             self._api_base   = (os.environ.get("NVIDIA_NIM_BASE_URL", "")
+                                or self._saved_value("NVIDIA_NIM_BASE_URL",
+                                                     "nvidia_nim_base_url")
                                 or "https://integrate.api.nvidia.com/v1").rstrip("/")
             self.available   = True
             self.description = "NVIDIA NIM (hosted or self-hosted)"

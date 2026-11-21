@@ -177,8 +177,14 @@ print_banner "Recon Engine · Bug Bounty" "$TARGET" \
     "URL crawl|katana · gau · waybackurls" \
     "Templates|nuclei sweep (optional)"
 
-# Prefer Go tools in ~/go/bin
-export PATH="$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Prefer Go tools in ~/go/bin — but never RE-prepend system bins ahead of a
+# caller-provided PATH: on a root VPS /usr/local/bin holds the host's real
+# scanners (subfinder/httpx/nuclei/...), which shadowed the test-suite stub
+# PATH and hung engine-level tests on live network probes (EXIT_CODE=124).
+# Tests/CI set BUGHUNTER_NO_BIN_PATH=1 to skip this entirely.
+if [ -z "${BUGHUNTER_NO_BIN_PATH:-}" ]; then
+    export PATH="$HOME/go/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+fi
 
 # macOS compatibility: GNU timeout may not exist; use gtimeout or passthrough
 if ! command -v timeout &>/dev/null; then
@@ -317,7 +323,10 @@ fi
 # command-not-found error path still fires with a clear message.
 _resolve_pd_httpx() {
     local cand
+    # BUGHUNTER_HTTPX_BIN wins first: it lets tests/CI pin the stubbed httpx
+    # even when the host has a real PD httpx at one of the fixed paths below.
     for cand in \
+        "${BUGHUNTER_HTTPX_BIN:-}" \
         "$HOME/go/bin/httpx" \
         "/opt/homebrew/bin/httpx" \
         "/usr/local/bin/httpx" \

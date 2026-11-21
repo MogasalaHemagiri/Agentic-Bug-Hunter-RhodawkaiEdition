@@ -296,6 +296,43 @@ class TestCliModeDelegation:
         # and nothing reached ABH's recon dir either
         assert not (recon_dir / "rtw" / "sub_permut").exists()
 
+    def test_subprocess_env_pins_scriptpath_to_rtw_home(self, full_state, tmp_path):
+        """Live-run fix: reconftw.sh resolves its lib/ + modules/ base from
+        $SCRIPTPATH — with a stale inherited value, sub_permut and
+        tls_ip_pivots sourced /opt/reconftw/modules/utils.sh instead of the
+        RTW_HOME checkout. The adapter must pin SCRIPTPATH=$RTW_HOME on every
+        delegated subprocess. (The stub records the value OUTSIDE the
+        harvested workdir — the post-call scope filter would strip a raw
+        filesystem path from harvested outputs, which is correct behavior.)"""
+        repo = tmp_path / "rtw"          # matches isolated_homes' RTW_HOME
+        repo.mkdir(exist_ok=True)
+        script = repo / "reconftw.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            "# stub: records the SCRIPTPATH the adapter handed us, outside the\n"
+            "# harvested workdir so the scope filter does not sanitize it\n"
+            'if [ -n "$SCRIPTPATH" ]; then\n'
+            '    printf "%s" "$SCRIPTPATH" > "$SCRIPTPATH/.sp_record"\n'
+            "fi\n"
+            'out=""\n'
+            'while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2";; esac; shift; done\n'
+            'mkdir -p "$out/subdomains"\n'
+            'echo "found.goodscope.example" > "$out/subdomains/rtw_out.txt"\n'
+            "exit 0\n"
+        )
+        script.chmod(0o755)
+
+        recon_dir = tmp_path / "recon" / "t.goodscope.example"
+        (recon_dir / "subdomains").mkdir(parents=True)
+        (recon_dir / "subdomains" / "all.txt").write_text("seed.goodscope.example\n")
+
+        result = adp.run_capability("CAP_DNS_PERMUT", TARGET, recon_dir=recon_dir,
+                                    scope_domains=SCOPE, force=True)
+        rtw_home = Path(os.environ["RTW_HOME"])
+        recorded = (rtw_home / ".sp_record")
+        assert recorded.is_file(), "stub never saw SCRIPTPATH in its subprocess env"
+        assert recorded.read_text() == str(rtw_home)
+
 
 # ── honest accounting (Step 1B fixes 2-4): seed diffing, skips, health table ──
 
