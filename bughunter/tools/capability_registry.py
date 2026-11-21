@@ -360,7 +360,10 @@ def check_rtw_repo() -> dict:
     home = rtw_home()
     script = rtw_script()
     info = {"rtw_home": str(home), "script": str(script),
-            "executable": script.is_file() and os.access(script, os.X_OK),
+            # Live-run fix: os.access(p, os.X_OK) returns True for root on
+            # Linux even for mode-0644 files, which marked a non-executable
+            # reconftw.sh as RTW_AVAILABLE on root VPSes. Check the mode bits.
+            "executable": script.is_file() and bool(os.stat(script).st_mode & 0o111),
             "commit_matches_pin": None}
     if (home / ".git").is_dir():
         try:

@@ -666,8 +666,14 @@ def cmd_recon(args):
     script = TOOLS / "recon_engine.sh"
     if script.exists():
         info("Running recon pipeline...")
-        success, _ = _run_shell(["bash", str(script), target, *_scope_flag_args(args)],
-                                env={"RECON_OUT_DIR": str(recon_dir)})
+        success, output = _run_shell(["bash", str(script), target, *_scope_flag_args(args)],
+                                     env={"RECON_OUT_DIR": str(recon_dir)})
+        if "SCOPE BLOCK" in output:
+            # Live-run fix: the pre-flight scope gate fired — 0 packets sent,
+            # 0 tools executed. Abort the whole command with a non-zero exit
+            # instead of continuing to AI analysis on an out-of-scope target.
+            err("Recon blocked by the pre-flight scope gate — aborting")
+            sys.exit(3)
         if not success:
             warn("Recon had issues — continuing with AI analysis")
     else:
@@ -699,8 +705,15 @@ def cmd_hunt(args):
     script = TOOLS / "recon_engine.sh"
     if script.exists():
         info("Phase 1: Recon...")
-        _run_shell(["bash", str(script), target, *_scope_flag_args(args)],
-                   env={"RECON_OUT_DIR": str(recon_dir)})
+        _rc_success, _rc_output = _run_shell(
+            ["bash", str(script), target, *_scope_flag_args(args)],
+            env={"RECON_OUT_DIR": str(recon_dir)})
+        if "SCOPE BLOCK" in _rc_output:
+            # Live-run fix: never let the hunt continue (the vuln scanner
+            # probes the target itself) once the pre-flight scope gate has
+            # blocked recon — abort with a non-zero exit.
+            err("Hunt blocked by the pre-flight scope gate — aborting")
+            sys.exit(3)
 
     # Run vuln scan
     vuln_script = TOOLS / "vuln_scanner.sh"
@@ -942,8 +955,8 @@ def _print_banner():
     for line, color in LINES:
         print(f"{color}{line}{NC}")
     print()
-    print(f"  {G3}by {W}AwareXone{NC}  {G3}·{NC}  {G2}awarexone.com{NC}  {G3}·{NC}  {G1}bughunter.fun{NC}")
-    print(f"  {G3}github.com/{G2}Awarexone{G3}/Agentic-Bug-Hunter{NC}")
+    print(f"  {G3}by {W}RhodawkAI{NC}  {G3}·{NC}  {G2}rhodawkai.com{NC}")
+    print(f"  {G3}github.com/{G2}Rhodawk-AI{G3}/Agentic-Bug-Hunter-RhodawkaiEdition{NC}")
     print(f"  {G3}free · open · no subscription required{NC}")
     print()
 

@@ -858,6 +858,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_status.add_argument("--target", required=True)
     p_status.add_argument("--json", action="store_true")
 
+    p_audit = sub.add_parser("audit-block",
+                             help="append a schema-validated scope-block entry to "
+                                  "hunt-memory/audit.jsonl (used by the recon_engine.sh "
+                                  "pre-flight scope gate)")
+    p_audit.add_argument("--target", required=True)
+    p_audit.add_argument("--reason", required=True)
+
     args = parser.parse_args(argv)
     scope_domains = _flatten(args.scope_domain if hasattr(args, "scope_domain") else [])
     scope_excluded = _flatten(args.scope_exclude if hasattr(args, "scope_exclude") else [])
@@ -873,6 +880,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             for e in manifest.get("entries", []):
                 print(f"  {e.get('capability_id'):<28} {e.get('status'):<26} "
                       f"finished={e.get('finished')} findings={e.get('findings_count', '-')}")
+        return 0
+
+    if args.cmd == "audit-block":
+        audit_scope_block(args.target, args.reason)
         return 0
 
     if args.cmd == "plan":

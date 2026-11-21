@@ -35,6 +35,42 @@ echo "============================================="
 echo "  Bug Bounty Tool Installer"
 echo "============================================="
 
+# ── reconFTW gap-fill dependencies (RhodawkAI Edition, --rtw-deps) ────────────
+# Live-run fix: parsed BEFORE the Homebrew bootstrap. --rtw-deps only requires
+# go + python3 and must NEVER invoke Homebrew (in particular never on Linux,
+# where the brew installer script breaks/loops when run as root). Installs
+# ONLY the 7 delegated capabilities' backing binaries via pinned per-capability
+# go-install through tools/capability_registry.py (reconftw's tools.lock pins
+# where present; pin-on-first-install for the rest — no brew floating, no
+# reconFTW install.sh).
+if [ "$INSTALL_RTW_DEPS" = "true" ]; then
+    echo ""
+    echo "[*] Installing reconFTW gap-fill dependencies (pinned per-capability)..."
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if ! command -v python3 &>/dev/null; then
+        log_err "python3 required for capability_registry.py (it is also required by the engine)"
+        exit 1
+    fi
+    if ! command -v go &>/dev/null; then
+        log_err "go is required for --rtw-deps but was not found on PATH."
+        log_err "Install it WITHOUT Homebrew, e.g.:"
+        log_err "  Debian/Ubuntu:  sudo apt-get install -y golang-go"
+        log_err "  Fedora/RHEL:    sudo dnf install -y golang"
+        log_err "  Arch:           sudo pacman -S go"
+        log_err "  macOS:          brew install go"
+        exit 1
+    fi
+    GOPATH="$(go env GOPATH 2>/dev/null || true)"
+    GOPATH="${GOPATH:-$HOME/go}"
+    if [[ ":$PATH:" != *":$GOPATH/bin:"* ]]; then
+        export PATH="$PATH:$GOPATH/bin"
+    fi
+    python3 "$SCRIPT_DIR/bughunter/tools/capability_registry.py" --install-all || true
+    python3 "$SCRIPT_DIR/bughunter/tools/capability_registry.py" --rebuild --banner || true
+    log_ok "reconFTW gap-fill dependency install finished"
+    exit 0
+fi
+
 # Check for Homebrew
 if ! command -v brew &>/dev/null; then
     log_warn "Homebrew not found. Installing..."
@@ -54,23 +90,8 @@ if [[ ":$PATH:" != *":$GOPATH/bin:"* ]]; then
     export PATH="$PATH:$GOPATH/bin"
 fi
 
-# ── reconFTW gap-fill dependencies (RhodawkAI Edition, --rtw-deps) ────────────
-# Installs ONLY the 7 delegated capabilities' backing binaries, pinned via
-# tools/capability_registry.py (reconFTW tools.lock pins where present; pin-
-# on-first-install for the rest — no brew floating, no reconFTW install.sh).
-if [ "$INSTALL_RTW_DEPS" = "true" ]; then
-    echo ""
-    echo "[*] Installing reconFTW gap-fill dependencies (pinned per-capability)..."
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    if ! command -v python3 &>/dev/null; then
-        log_err "python3 required for capability_registry.py (it is also required by the engine)"
-        exit 1
-    fi
-    python3 "$SCRIPT_DIR/bughunter/tools/capability_registry.py" --install-all || true
-    python3 "$SCRIPT_DIR/bughunter/tools/capability_registry.py" --rebuild --banner || true
-    log_ok "reconFTW gap-fill dependency install finished"
-    exit 0
-fi
+# ── (RhodawkAI Edition) --rtw-deps is handled above, BEFORE the Homebrew
+# bootstrap, so it never touches brew — see the block near the top. ────────────
 
 # Tools to install via Homebrew
 BREW_TOOLS=(

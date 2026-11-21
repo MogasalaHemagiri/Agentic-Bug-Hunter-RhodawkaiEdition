@@ -38,13 +38,22 @@ TARGET = "target.goodscope.example"
 
 @pytest.fixture(autouse=True)
 def isolated_homes(tmp_path, monkeypatch):
-    """Point every home/path knob the two modules read at a tmp sandbox."""
+    """Point every home/path knob the two modules read at a tmp sandbox.
+
+    Live-run fix: HOME and RTW_HOME are both pinned to the tmp sandbox so a
+    host checkout (/root/Tools/reconftw when running as root on a VPS) can
+    never leak into availability results — including the RTW_HOME-unset tests,
+    whose default ~/.Tools/reconftw lookup then resolves inside tmp_path."""
     home = tmp_path / "bughunter-home"
     home.mkdir()
     monkeypatch.setenv("BUGHUNTER_HOME", str(home))
     monkeypatch.setenv("BUGHUNTER_CAPABILITIES_FILE", str(home / "capabilities.json"))
     monkeypatch.setenv("RTW_HOME", str(tmp_path / "rtw"))
-    # Keep the developer's real config.json out of scope-gate results.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    # Keep the developer's real config.json out of scope-gate results. NOTE:
+    # os.access(p, os.X_OK) is True for root on Linux even for mode-0644 files,
+    # so the registry's executable check uses mode bits (os.stat().st_mode);
+    # HOME pinning alone would not be sufficient on a root VPS.
     monkeypatch.setenv("HOME", str(tmp_path))
     return home
 

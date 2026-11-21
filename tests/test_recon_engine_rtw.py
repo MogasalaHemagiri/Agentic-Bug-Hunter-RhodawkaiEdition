@@ -78,6 +78,15 @@ def rtw_env(tmp_path, monkeypatch):
     curl_stub = stub_bin / "curl"
     curl_stub.write_text("#!/bin/bash\nexit 7\n")
     curl_stub.chmod(0o755)
+    # Live-run fix: stub every scanner the engine's `command -v` guards for,
+    # so a fully-provisioned host (real subfinder/nmap/dig on PATH, as on a
+    # root VPS) can never turn these unit tests into live network runs or
+    # hangs. The engine treats them exactly like absent/empty tools.
+    for _tool in ("subfinder", "amass", "httpx", "nmap", "dig", "katana",
+                  "gau", "ffuf", "nuclei"):
+        _stub = stub_bin / _tool
+        _stub.write_text("#!/bin/bash\nexit 0\n")
+        _stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{stub_bin}:{os.environ.get('PATH', '')}")
 
     home = tmp_path / "bughunter-home"
@@ -133,6 +142,16 @@ class TestPipelineOrder:
     def test_no_phase_10_5_left(self):
         assert "Phase 10.5" not in ENGINE.read_text()
 
+    def test_phase_1_enum_calls_are_time_bounded(self):
+        """Live-run fix: Phase 1 subfinder and the crt.sh/wayback curls are
+        wrapped in bounded `timeout` so passive enumeration can never hang."""
+        text = ENGINE.read_text()
+        assert "timeout 180 subfinder" in text
+        p1 = text.index("# Phase 1: Subdomain Enumeration")
+        p15 = text.index("# Phase 1.5: reconFTW Subdomain/Infra Gap-Fill")
+        phase1 = text[p1:p15]
+        assert phase1.count("timeout 60 curl") == 2
+
     def test_adapter_phase_groups_match_engine(self):
         sys.path.insert(0, str(REPO_ROOT / "bughunter"))
         from tools import rtw_adapter as adp
@@ -169,13 +188,15 @@ class TestCliScopeGate:
         fn_names = {e["rtw_function"] for e in manifest["entries"]}
         assert {"sub_asn", "sub_permut", "cdnprovider"} <= fn_names
 
-    def test_out_of_scope_blocks_with_zero_subprocesses(self, rtw_env):
-        """Out-of-scope target → adapter blocks, stub never executes, block
-        audited, engine still completes the native pipeline."""
+    def test_out_of_scope_blocks_preflight(self, rtw_env):
+        """Live-run fix: an out-of-scope domain target is blocked by the
+        PRE-FLIGHT gate — non-zero exit before any phase runs, zero tools
+        executed, zero packets sent, block audited."""
         proc = run_engine(["evil.example", "--scope-domain", SCOPE[0]])
         out = proc.stdout + proc.stderr
-        assert proc.returncode == 0, out[-3000:]
-        assert "Phase 1.5" in out
+        assert proc.returncode != 0, out[-3000:]
+        assert "SCOPE BLOCK" in out
+        assert "Phase 1" not in out, "a phase started after the pre-flight block"
         assert not rtw_env["marker"].is_file(), \
             "reconFTW subprocess spawned for an out-of-scope target!"
         audit = (rtw_env["home"] / "hunt-memory" / "audit.jsonl")
@@ -184,14 +205,26 @@ class TestCliScopeGate:
         assert entry["scope_check"] == "fail"
         assert "evil.example" in entry["url"]
 
-    def test_no_scope_flags_fails_closed(self, rtw_env):
-        """Neither --scope-domain nor --no-scope-check → delegation fails
-        closed (adapter blocks every capability; no stub execution)."""
+    def test_no_scope_flags_blocks_preflight(self, rtw_env):
+        """Neither --scope-domain nor --no-scope-check → the whole engine run
+        fails closed at the pre-flight gate (not just delegation)."""
         proc = run_engine([TARGET])
         out = proc.stdout + proc.stderr
-        assert proc.returncode == 0, out[-3000:]
-        assert "fail-closed" in out or "No --scope-domain" in out
+        assert proc.returncode != 0, out[-3000:]
+        assert "SCOPE BLOCK" in out and "no --scope-domain" in out
+        assert "Phase 1" not in out
         assert not rtw_env["marker"].is_file()
+        audit = (rtw_env["home"] / "hunt-memory" / "audit.jsonl")
+        assert audit.is_file(), "scope block not audited"
+
+    def test_normalize_only_unaffected_by_gate(self, rtw_env):
+        """Upstream contract preserved: --normalize-only prints the parsed
+        target and exits 0 with no scope flags — the gate sits after it."""
+        proc = run_engine([TARGET, "--normalize-only"])
+        out = proc.stdout + proc.stderr
+        assert proc.returncode == 0, out[-3000:]
+        assert "host=target.goodscope.example" in out
+        assert "SCOPE BLOCK" not in out
 
     def test_no_scope_check_opt_out_runs_unscoped(self, rtw_env):
         """--no-scope-check is the explicit demo opt-out: stub executes."""

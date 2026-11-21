@@ -6,7 +6,7 @@ Using it? Add yourself with a quick pull request to this file — your name, a l
 
 | Adopter | Link | How they use BugHunter |
 |---|---|---|
-| AwareXone | https://awarexone.com | Powers and sponsors the project — AI agent against scams & fraud |
+| RhodawkAI | https://rhodawkai.com | Powers and sponsors the project — AI agent against scams & fraud |
 
 ---
 

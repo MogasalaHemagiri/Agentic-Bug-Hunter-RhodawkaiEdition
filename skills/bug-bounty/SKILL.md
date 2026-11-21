@@ -1635,12 +1635,12 @@ To use this as a Claude Code skill, copy this file to your skills directory:
 
 ```bash
 # Option A: Clone the repo and link the skill
-git clone https://github.com/Awarexone/Agentic-Bug-Hunter.git ~/.claude/skills/bug-bounty
+git clone https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition.git ~/.claude/skills/bug-bounty
 ln -s ~/.claude/skills/bug-bounty/SKILL.md ~/.claude/skills/bug-bounty/SKILL.md
 
 # Option B: Direct copy
 mkdir -p ~/.claude/skills/bug-bounty
-curl -s https://raw.githubusercontent.com/Awarexone/Agentic-Bug-Hunter/main/SKILL.md \
+curl -s https://raw.githubusercontent.com/RhodawkAI/Agentic-Bug-Hunter/main/SKILL.md \
   -o ~/.claude/skills/bug-bounty/SKILL.md
 ```
 

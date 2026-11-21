@@ -3,13 +3,13 @@
   "description": "AI-powered bug bounty toolkit — recon, vulnerability hunting, validation gates, and submission-ready reports for HackerOne, Bugcrowd, Intigriti, and Immunefi.",
   "version": "6.0.1",
   "author": {
-    "name": "AwareXone",
-    "url": "https://awarexone.com"
+    "name": "RhodawkAI",
+    "url": "https://rhodawkai.com"
   },
-  "homepage": "https://github.com/Awarexone/Agentic-Bug-Hunter",
+  "homepage": "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Awarexone/Agentic-Bug-Hunter.git"
+    "url": "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition.git"
   },
   "license": "MIT",
   "keywords": [

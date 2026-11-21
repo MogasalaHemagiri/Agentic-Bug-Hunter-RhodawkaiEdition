@@ -1,6 +1,6 @@
 # Site
 
-Landing page for [bughunter.fun](https://bughunter.fun).
+Landing page for [rhodawkai.com](https://rhodawkai.com).
 
 | File | Purpose |
 |:---|:---|

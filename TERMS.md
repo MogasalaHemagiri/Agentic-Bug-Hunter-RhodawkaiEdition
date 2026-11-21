@@ -87,10 +87,10 @@ These terms may be updated at any time. Continued use of the tool after changes 
 
 ## 9. Contact
 
-Questions or concerns: [hello@awarexone.com](mailto:hello@awarexone.com)
+Questions or concerns: [hello@rhodawkai.com](mailto:hello@rhodawkai.com)
 
-Business / partnership inquiries: [b2b@awarexone.com](mailto:b2b@awarexone.com)
+Business / partnership inquiries: [b2b@rhodawkai.com](mailto:b2b@rhodawkai.com)
 
-Maintainer: [shuvon@awarexone.com](mailto:shuvon@awarexone.com)
+Maintainer: [shuvon@rhodawkai.com](mailto:shuvon@rhodawkai.com)
 
 For security disclosures about this tool itself, open a GitHub issue marked **[SECURITY]**.
