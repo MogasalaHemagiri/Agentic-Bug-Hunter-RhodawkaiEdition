@@ -472,8 +472,11 @@ def cmd_setup(args):
 
         save_config(cfg)
         ok(f"Config saved to {CONFIG}")
+        # max_tokens >= 256: reasoning models (e.g. NVIDIA NIM nemotron) spend
+        # budget on reasoning_content before emitting final content — a tiny
+        # cap (10) makes the connectivity ping return an empty reply.
         reply = client.chat(selected_model, "You are a helpful assistant.",
-                            "Reply with exactly: READY", max_tokens=10)
+                            "Reply with exactly: READY", max_tokens=256)
         ok(f"Model responded: {reply.strip()}" if reply else "Connected (no reply — pull a model if using Ollama)")
     else:
         if not requested_model:

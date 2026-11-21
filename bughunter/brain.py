@@ -38,7 +38,7 @@ API keys (env vars):
   REQUESTY_API_KEY    - Requesty (multi-model gateway, anthropic/claude-sonnet-4-6, etc.)
   REQUESTY_BASE_URL   - Requesty base URL (default: https://router.requesty.ai/v1,
                         EU: https://router.eu.requesty.ai/v1)
-  NVIDIA_API_KEY      — NVIDIA NIM (meta/llama-3.3-70b-instruct,
+  NVIDIA_API_KEY      — NVIDIA NIM (nvidia/nemotron-3-ultra-550b-a55b,
                         qwen/qwen2.5-coder-32b-instruct, etc.)
   NVIDIA_NIM_BASE_URL - NVIDIA NIM base URL (default:
                         https://integrate.api.nvidia.com/v1; point it at a
@@ -209,7 +209,7 @@ class LLMClient:
         "antigravity": "gemini-3.8-flash-high",
         "kimi":        "moonshot-v1-128k",
         "mistral":     "mistral-large-latest",
-        "nvidia":      "meta/llama-3.3-70b-instruct",
+        "nvidia":      "nvidia/nemotron-3-ultra-550b-a55b",
         "together":    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "cerebras":    "llama3.3-70b",
         "perplexity":  "sonar-pro",
@@ -748,7 +748,14 @@ class LLMClient:
                 f"to a supported one."
             )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+        msg = r.json()["choices"][0]["message"] or {}
+        # Reasoning models (e.g. NVIDIA NIM nemotron) can return
+        # {"content": null, "reasoning_content": "..."} when max_tokens is
+        # small or while still reasoning. Fall back to reasoning_content so a
+        # null content never raises AttributeError: 'NoneType' object has no
+        # attribute 'strip'.
+        text = (msg.get("content") or msg.get("reasoning_content") or "").strip()
+        return text
 
     def list_models(self) -> list[str]:
         """List available models for the current provider."""
@@ -808,8 +815,10 @@ class LLMClient:
         elif self.provider == "nvidia":
             # Hosted NIM catalog highlights (https://build.nvidia.com). A
             # self-hosted NIM endpoint exposes exactly its own loaded model.
+            # meta/llama-3.3-70b-instruct returned HTTP 410 Gone on the hosted
+            # endpoint — retired ids stay out of the catalog.
             return [
-                "meta/llama-3.3-70b-instruct",
+                "nvidia/nemotron-3-ultra-550b-a55b",
                 "qwen/qwen2.5-coder-32b-instruct",
                 "nvidia/llama-3.1-nemotron-70b-instruct",
                 "deepseek-ai/deepseek-r1",
@@ -1174,7 +1183,7 @@ Keep it under 80 words total."""
                     },
                 )
                 for chunk in stream:
-                    token = chunk["message"]["content"]
+                    token = (chunk.get("message") or {}).get("content") or ""
                     print(token, end="", flush=True)
                     full_text += token
             else:
@@ -2486,7 +2495,7 @@ NEXT ACTION: <one concrete action>
                 },
             )
             for chunk in stream:
-                token = chunk["message"]["content"]
+                token = (chunk.get("message") or {}).get("content") or ""
                 print(token, end="", flush=True)
                 full_text += token
         except Exception as exc:
