@@ -16,6 +16,7 @@ the build brief + the three structural fixes:
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -181,6 +182,66 @@ class TestRegistry:
         assert "[Req]" in out and "[Opt]" in out
         for cap in reg.CAPABILITIES:
             assert cap in out
+
+
+# ── source-only subshell hardening + failed-run publishing (live-run fixes) ───
+
+class TestSourceOnlySubshell:
+    def test_source_script_never_enables_set_u(self):
+        """Live-run fix: reconFTW's Bash modules read uninitialized guard
+        variables (lib/common.sh: _COMMON_SH_LOADED) — `set -u` killed the
+        source-only subshell with rc=127 before the delegated function ran."""
+        text = adp.build_source_script(
+            adp.CAPABILITIES["CAP_DNS_PERMUT"], TARGET,
+            Path("/tmp/rtw-work"), Path("/tmp/rtw-work/rtw_override.cfg"))
+        assert text.startswith("set -eo pipefail")
+        assert "set -u" not in text
+        assert "-euo" not in text
+
+    def test_source_script_exports_scriptpath_before_source(self):
+        """Live-run fix: SCRIPTPATH pins reconFTW's lib/ + modules/ to
+        $RTW_HOME instead of a stale /opt/reconftw on the host."""
+        text = adp.build_source_script(
+            adp.CAPABILITIES["CAP_CDN_ISOLATE"], TARGET,
+            Path("/tmp/rtw-work"), Path("/tmp/rtw-work/rtw_override.cfg"))
+        expected = f"export SCRIPTPATH={shlex.quote(str(adp.rtw_home()))}"
+        assert expected in text
+        assert text.index("export SCRIPTPATH=") < text.index("source ")
+
+    def test_failed_function_publishes_no_findings(self, full_state, tmp_path):
+        """Live-run fix: rc != 0 → FAILED. The pre-seeded inputs (e.g.
+        subdomains/subdomains.txt) must NOT be published or counted:
+        findings_count == 0 and published == []."""
+        repo = tmp_path / "rtw"          # matches isolated_homes' RTW_HOME
+        repo.mkdir(exist_ok=True)
+        script = repo / "reconftw.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            "# stub: source-only defines the delegated function; it then fails\n"
+            'if [[ "${1:-}" == "--source-only" ]]; then\n'
+            "    sub_permut() {\n"
+            '        echo "candidate.goodscope.example" > "$PWD/subdomains/rtw_out.txt"\n'
+            "        return 3\n"
+            "    }\n"
+            "    return 0 2>/dev/null || exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        script.chmod(0o755)
+
+        recon_dir = tmp_path / "recon"
+        (recon_dir / "subdomains").mkdir(parents=True)
+        (recon_dir / "subdomains" / "all.txt").write_text("seed.goodscope.example\n")
+
+        result = adp.run_capability("CAP_DNS_PERMUT", TARGET, recon_dir=recon_dir,
+                                    scope_domains=SCOPE)
+        assert result["status"] == "FAILED"
+        entry = result["entry"]
+        assert entry["returncode"] == 3
+        assert entry["findings_count"] == 0
+        assert entry["published"] == []
+        # and nothing reached ABH's recon dir either
+        assert not (recon_dir / "rtw" / "sub_permut").exists()
 
 
 # ── rtw_adapter: acceptance criteria ──────────────────────────────────────────

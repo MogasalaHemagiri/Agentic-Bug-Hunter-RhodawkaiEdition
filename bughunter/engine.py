@@ -28,6 +28,10 @@ Providers (auto-detected, first available wins):
          requesty   - multi-model gateway, set REQUESTY_API_KEY
                     get key: https://app.requesty.ai/api-keys
                     docs: https://docs.requesty.ai
+         nvidia     — NVIDIA NIM (hosted or self-hosted), set NVIDIA_API_KEY
+                    get key: https://build.nvidia.com
+                    base URL: NVIDIA_NIM_BASE_URL
+                    (default https://integrate.api.nvidia.com/v1)
 
 Usage:
   ./engine.py setup                        one-time config wizard
@@ -274,6 +278,7 @@ def cmd_setup(args):
         "10": ("litellm",     "LiteLLM     (100+ providers)    — uses per-provider keys or LITELLM_API_KEY"),
         "11": ("requesty",    "Requesty    (multi-model)       — needs REQUESTY_API_KEY"),
         "12": ("antigravity", "Antigravity / Gemini (Google OAuth — Gemini AI)"),
+        "13": ("nvidia",     "NVIDIA NIM (hosted / self-hosted) — needs NVIDIA_API_KEY"),
     }
 
     requested_provider = (
@@ -291,6 +296,10 @@ def cmd_setup(args):
 
         choice = input("Enter number [1]: ").strip() or "1"
         provider = providers.get(choice, ("ollama", ""))[0]
+
+    # NVIDIA NIM aliases normalize to the canonical provider id.
+    if provider in ("nim", "nvidia-nim", "nvidia_nim"):
+        provider = "nvidia"
 
     if provider in ("gemini", "gemini-oauth", "google-oauth", "agy") and not os.environ.get("GEMINI_API_KEY"):
         provider = "antigravity"
@@ -313,6 +322,7 @@ def cmd_setup(args):
         "orcarouter": "ORCAROUTER_API_KEY",
         "fluxion":    "FLUXION_API_KEY",
         "requesty":   "REQUESTY_API_KEY",
+        "nvidia":     "NVIDIA_API_KEY",
         "gemini":     "GEMINI_API_KEY",
     }
 
@@ -348,7 +358,13 @@ def cmd_setup(args):
         env_var = env_map[provider]
         existing = os.environ.get(env_var, "")
         print(f"\nEnter {env_var} (blank = keep existing): ", end="")
-        api_key = input().strip()
+        try:
+            api_key = input().strip()
+        except EOFError:
+            # Non-interactive `setup --provider <p> --model <m>`: keep whatever
+            # the environment (or an earlier setup) already configured instead
+            # of crashing with an EOFError traceback.
+            api_key = ""
         if api_key:
             cfg[env_var] = api_key
             os.environ[env_var] = api_key
@@ -356,6 +372,22 @@ def cmd_setup(args):
             info(f"Using existing {env_var} from environment")
         else:
             warn(f"No {env_var} set — provider may not work")
+
+    # NVIDIA NIM: optional endpoint override for self-hosted / regional NIM
+    # deployments (the hosted default is applied in brain.py when unset).
+    if provider == "nvidia":
+        shown = (os.environ.get("NVIDIA_NIM_BASE_URL", "")
+                 or cfg.get("NVIDIA_NIM_BASE_URL", "")
+                 or "https://integrate.api.nvidia.com/v1")
+        try:
+            nim_base = input(f"\nEnter NVIDIA_NIM_BASE_URL (blank = {shown}): ").strip()
+        except EOFError:
+            nim_base = ""
+        if nim_base:
+            cfg["NVIDIA_NIM_BASE_URL"] = nim_base
+            os.environ["NVIDIA_NIM_BASE_URL"] = nim_base
+        elif cfg.get("NVIDIA_NIM_BASE_URL"):
+            os.environ.setdefault("NVIDIA_NIM_BASE_URL", cfg["NVIDIA_NIM_BASE_URL"])
 
     # Test connection
     info("Testing connection...")
@@ -538,6 +570,7 @@ def cmd_providers(args):
         "orcarouter":   "ORCAROUTER_API_KEY",
         "fluxion":      "FLUXION_API_KEY",
         "requesty":     "REQUESTY_API_KEY",
+        "nvidia":       "NVIDIA_API_KEY",
     }
     tier = {
         "ollama":       "FREE (local)",
@@ -551,6 +584,7 @@ def cmd_providers(args):
         "orcarouter":   "subscription",
         "fluxion":      "subscription",
         "requesty":     "pay-as-you-go",
+        "nvidia":       "pay-as-you-go",
     }
 
     print(f"\n  {'PROVIDER':<14} {'TIER':<16} {'STATUS':<22} {'NOTE'}")
@@ -985,7 +1019,7 @@ def main():
         """),
     )
     parser.add_argument("--provider", "-p",
-                        help="Force provider: ollama / gemini-oauth / antigravity / gemini / groq / deepseek / claude / openai / grok / openrouter / orcarouter / fluxion / litellm / requesty")
+                        help="Force provider: ollama / gemini-oauth / antigravity / gemini / groq / deepseek / claude / openai / grok / openrouter / orcarouter / fluxion / litellm / requesty / nvidia (NIM, aliases: nim, nvidia-nim)")
     parser.add_argument("--model", "-m", help="Force model for this invocation (for example qwen3:14b)")
     parser.add_argument("--no-banner", action="store_true", help="Suppress banner")
 
@@ -996,6 +1030,7 @@ def main():
         "--provider", dest="setup_provider",
         choices=["ollama", "groq", "deepseek", "claude", "openai", "grok",
                  "openrouter", "orcarouter", "fluxion", "litellm", "requesty",
+                 "nvidia", "nim", "nvidia-nim",
                  "gemini", "gemini-oauth", "google-oauth", "antigravity", "agy"],
         help="Provider to persist (skips the provider prompt)",
     )

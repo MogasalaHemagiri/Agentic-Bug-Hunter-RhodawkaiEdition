@@ -18,9 +18,11 @@ sys.path.insert(0, ROOT)
 @pytest.fixture
 def brain_module(monkeypatch):
     for env in (
-        "BRAIN_PROVIDER", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
+        "BRAIN_PROVIDER", "BRAIN_MODEL",
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
         "OPENROUTER_API_KEY", "ORCAROUTER_API_KEY", "FLUXION_API_KEY",
         "REQUESTY_API_KEY", "REQUESTY_BASE_URL",
+        "NVIDIA_API_KEY", "NVIDIA_NIM_BASE_URL",
     ):
         monkeypatch.delenv(env, raising=False)
     import brain
@@ -245,3 +247,60 @@ def test_requesty_base_url_override(brain_module, monkeypatch):
 
 def test_requesty_is_opt_in_only(brain_module):
     assert "requesty" not in brain_module.LLMClient.PROVIDER_PRIORITY
+
+
+def test_nvidia_key_jumps_to_front(brain_module, monkeypatch):
+    """NVIDIA_API_KEY set → the nvidia (NIM) provider is probed first."""
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    client = brain_module.LLMClient.__new__(brain_module.LLMClient)
+    client.available = False
+    tracker = _Tracker(available_provider="nvidia")
+    tracker.bind(client)
+
+    chosen = brain_module.LLMClient._auto_detect(client)
+
+    assert chosen == "nvidia"
+    assert tracker.calls[0] == "nvidia"
+
+
+def test_nvidia_init_sets_default_api_base(brain_module, monkeypatch):
+    """Default NIM endpoint is NVIDIA's hosted integrate.api.nvidia.com/v1."""
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    monkeypatch.delenv("NVIDIA_NIM_BASE_URL", raising=False)
+    client = brain_module.LLMClient.__new__(brain_module.LLMClient)
+    client.available = False
+    client._ollama = None
+    client._http = None
+    client.description = ""
+    client.provider = "nvidia"
+
+    brain_module.LLMClient._init_provider(client, "nvidia")
+
+    assert client.available is True
+    assert client._api_base == "https://integrate.api.nvidia.com/v1"
+    assert "nvidia" in client.description.lower()
+    assert brain_module.LLMClient.DEFAULT_MODELS["nvidia"] == "meta/llama-3.3-70b-instruct"
+    assert "meta/llama-3.3-70b-instruct" in brain_module.LLMClient.list_models(client)
+
+
+def test_nvidia_base_url_override(brain_module, monkeypatch):
+    """NVIDIA_NIM_BASE_URL overrides the endpoint (self-hosted NIM)."""
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    monkeypatch.setenv("NVIDIA_NIM_BASE_URL", "http://nim.lab.internal:8000/v1/")
+    client = brain_module.LLMClient.__new__(brain_module.LLMClient)
+    client.available = False
+    client._http = None
+    client.description = ""
+
+    brain_module.LLMClient._init_provider(client, "nvidia")
+
+    assert client._api_base == "http://nim.lab.internal:8000/v1"
+
+
+def test_nvidia_in_priority_with_nim_aliases(brain_module, monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    assert "nvidia" in brain_module.LLMClient.PROVIDER_PRIORITY
+    for alias in ("nim", "nvidia-nim", "nvidia_nim"):
+        client = brain_module.LLMClient(alias)
+        assert client.provider == "nvidia"
+        assert client.available is True

@@ -101,6 +101,8 @@ _PATTERNS: list[tuple[re.Pattern, Any]] = [
     # GitHub tokens (classic + fine-grained + app).
     (re.compile(r"\bgh[opusr]_[A-Za-z0-9]{20,}"), "[REDACTED:github_token]"),
     (re.compile(r"\bgithub_pat_[0-9A-Za-z_]{22,}"), "[REDACTED:github_token]"),
+    # NVIDIA NIM API keys (nvapi-...).
+    (re.compile(r"\bnvapi-[A-Za-z0-9_\-]{20,}"), "[REDACTED:nvidia_key]"),
     # OpenAI / Stripe style sk- keys.
     (re.compile(r"\bsk-[A-Za-z0-9]{20,}"), "[REDACTED:api_key]"),
     (re.compile(r"\b[rsp]k_live_[0-9A-Za-z]{10,}"), "[REDACTED:stripe_key]"),
