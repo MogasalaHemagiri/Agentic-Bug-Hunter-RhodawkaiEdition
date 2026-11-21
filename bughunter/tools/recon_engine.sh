@@ -601,17 +601,83 @@ else
 fi
 
 # ============================================================
-# Phase 3: Port Scanning
+# Phase 2.5: CDN/Origin Classification (RhodawkAI Edition, Step 2A)
+# Classify every live host into CDN_EDGE / THIRD_PARTY_SAAS /
+# FIRST_PARTY_ORIGIN so Phase 3 spends nmap minutes on origins only — never
+# on Cloudflare/Vercel/Akamai/Fastly/CloudFront edges, and never on
+# third-party SaaS endpoints (Shopify, HubSpot, Zendesk, GitHub Pages, ...).
+# Evidence per host (best-effort, bounded to the first 100 live hosts):
+#   - CNAME + A record via dig (2s/1-try caps)
+#   - httpx tech-detect column captured in Phase 2
+# The classifier itself lives in tools/recon_fusion.py (pure Python, unit
+# tested) so bash and the fusion pass share ONE implementation.
+# ============================================================
+HOSTS_DIR="$RECON_DIR/hosts"
+HOST_CLASSES="$HOSTS_DIR/host_classes.txt"
+ORIGIN_TARGETS="$HOSTS_DIR/origin_targets.txt"
+mkdir -p "$HOSTS_DIR"
+: > "$HOST_CLASSES"; : > "$ORIGIN_TARGETS"; : > "$HOSTS_DIR/resolution.txt"
+
+if [ -s "$RECON_DIR/live/urls.txt" ]; then
+    log_info "Phase 2.5: CDN/Origin Classification"
+    log_step "Resolving CNAME/A records (bounded: first 100 live hosts)..."
+    head -100 "$RECON_DIR/live/urls.txt" | while IFS= read -r live_url; do
+        host=$(printf '%s' "$live_url" | sed 's|https\?://||;s|[/:].*||')
+        [ -z "$host" ] && continue
+        cname="" ; ip=""
+        if command -v dig &>/dev/null; then
+            cname=$(dig +short +time=2 +tries=1 "$host" CNAME 2>/dev/null | head -1)
+            ip=$(dig +short +time=2 +tries=1 "$host" A 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+        fi
+        printf '%s\t%s\t%s\n' "$host" "$ip" "$cname" >> "$HOSTS_DIR/resolution.txt"
+    done
+    if python3 "$BASE_DIR/tools/recon_fusion.py" classify --recon-dir "$RECON_DIR" >/dev/null 2>&1; then
+        ORIGIN_COUNT=$(grep -c 'FIRST_PARTY_ORIGIN' "$HOST_CLASSES" 2>/dev/null)
+        CDN_COUNT=$(grep -c 'CDN_EDGE' "$HOST_CLASSES" 2>/dev/null)
+        SAAS_COUNT=$(grep -c 'THIRD_PARTY_SAAS' "$HOST_CLASSES" 2>/dev/null)
+        log_done "Classified: ${ORIGIN_COUNT:-0} first-party origin(s), ${CDN_COUNT:-0} CDN edge(s), ${SAAS_COUNT:-0} third-party SaaS"
+        awk -F'\t' '$3 == "FIRST_PARTY_ORIGIN" { print ($2 != "" ? $2 : $1) }' \
+            "$HOST_CLASSES" > "$ORIGIN_TARGETS" 2>/dev/null || true
+        sort -u -o "$ORIGIN_TARGETS" "$ORIGIN_TARGETS" 2>/dev/null || true
+    else
+        log_warn "host classification failed — Phase 3 falls back to the legacy single-target nmap"
+    fi
+fi
+
+# ============================================================
+# Phase 3: Port Scanning (origin-only — Step 2A)
 # ============================================================
 echo ""
 log_info "Phase 3: Port Scanning"
 
 if command -v nmap &>/dev/null; then
-    log_step "Running nmap (top 1000 ports) on $TARGET..."
-    nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
-        -oN "$RECON_DIR/ports/nmap_results.txt" \
-        -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
-    log_done "Nmap scan complete"
+    # Step 2A: never nmap a CDN edge or a SaaS endpoint — scanning a
+    # Cloudflare/Akamai edge only fingerprints the CDN, and scanning
+    # Shopify/Zendesk hosts probes the vendor, not the program. Log every
+    # skip explicitly instead of silently widening or narrowing the scan.
+    if [ -s "$HOST_CLASSES" ]; then
+        awk -F'\t' '$3 == "CDN_EDGE" || $3 == "THIRD_PARTY_SAAS" {
+            ip = ($2 != "" ? $2 : $1)
+            provider = ($4 != "" ? $4 : "unknown")
+            printf "[i] Skipping nmap on %s host/IP %s (%s)\n", $3, ip, provider
+        }' "$HOST_CLASSES"
+    fi
+    if [ -s "$ORIGIN_TARGETS" ]; then
+        log_step "Running nmap (top 1000 ports) on FIRST_PARTY_ORIGIN target(s) only: $(wc -l < "$ORIGIN_TARGETS" | tr -d ' ')"
+        nmap -sV --top-ports 1000 -T4 --open -iL "$ORIGIN_TARGETS" \
+            -oN "$RECON_DIR/ports/nmap_results.txt" \
+            -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
+        log_done "Nmap scan complete (origin IPs only)"
+    elif [ -s "$HOST_CLASSES" ]; then
+        log_warn "No FIRST_PARTY_ORIGIN targets classified — skipping nmap entirely (0 origin IPs, 0 packets spent on edges)"
+        : > "$RECON_DIR/ports/nmap_greppable.txt"
+    else
+        log_step "Running nmap (top 1000 ports) on $TARGET..."
+        nmap -sV --top-ports 1000 -T4 --open "$TARGET" \
+            -oN "$RECON_DIR/ports/nmap_results.txt" \
+            -oG "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null || true
+        log_done "Nmap scan complete"
+    fi
 
     # Extract open ports (macOS compatible - no grep -P)
     grep "open" "$RECON_DIR/ports/nmap_greppable.txt" 2>/dev/null \
@@ -997,6 +1063,24 @@ if command -v dig &>/dev/null && [ -s "$RECON_DIR/subdomains/all.txt" ]; then
 fi
 
 # ============================================================
+# Canonical Fusion (RhodawkAI Edition, Step 2B/2C) — runs BEFORE the LLM
+# analysis pass: merge every recon artifact + published reconFTW outputs
+# into <recon_dir>/recon_truth.json (dedup, provenance, SimHash host
+# clustering, CDN/origin classes, tool_health), diff against the previous
+# run into delta.json (previous truth archived to recon_truth.prev.json),
+# and mirror to ~/.bughunter/recon/<target>/recon_truth.json.
+# ============================================================
+echo ""
+log_info "Canonical Fusion (recon_truth.json)"
+if command -v python3 &>/dev/null && [ -f "$BASE_DIR/tools/recon_fusion.py" ]; then
+    python3 "$BASE_DIR/tools/recon_fusion.py" fuse --recon-dir "$RECON_DIR" --target "$TARGET" \
+        ${RTW_SCOPE_ARGS[@]+"${RTW_SCOPE_ARGS[@]}"} \
+        || log_warn "recon fusion failed (non-fatal — raw artifacts remain the fallback)"
+else
+    log_warn "python3 / recon_fusion.py unavailable — skipping canonical fusion"
+fi
+
+# ============================================================
 # Summary
 # ============================================================
 echo ""
@@ -1042,6 +1126,23 @@ done
 echo "  Probe list (post gap-fill): $(wc -l < "$RECON_DIR/subdomains/all.txt" | tr -d ' ') subdomains"
 [ -f "$RECON_DIR/urls/all.txt" ] && \
 echo "  URL corpus (post gap-fill): $(wc -l < "$RECON_DIR/urls/all.txt" | tr -d ' ') urls"
+
+# Step 2C: 1-line run-over-run delta summary.
+if [ -f "$RECON_DIR/delta.json" ]; then
+    DELTA_LINE=$(python3 "$BASE_DIR/tools/recon_fusion.py" delta-line --recon-dir "$RECON_DIR" 2>/dev/null || true)
+    [ -n "$DELTA_LINE" ] && echo "  $DELTA_LINE"
+fi
+
+# Step 1B: honest per-capability health table for the reconFTW delegation —
+# a 0.1s silent no-op can never hide behind rc=0.
+if [ -f "$RTW_ADAPTER" ] && command -v python3 &>/dev/null; then
+    RTW_HEALTH="$(python3 "$RTW_ADAPTER" health-table --target "$TARGET" 2>/dev/null || true)"
+    if [ -n "$RTW_HEALTH" ]; then
+        echo ""
+        echo "$RTW_HEALTH"
+        echo ""
+    fi
+fi
 
 echo ""
 echo "  Results: $RECON_DIR/"

@@ -111,7 +111,7 @@ CAPABILITIES: Dict[str, CapabilitySpec] = {
             description="DNS brute/permutation via gotator+puredns (reconFTW sub_permut)",
             required_tools=["gotator", "puredns"],
             optional_tools=["regulator", "dsieve", "anew"],
-            rtw_mode="source_only",
+            rtw_mode="cli",
             seeds=["subdomains/all.txt"],
         ),
         CapabilitySpec(
@@ -147,7 +147,7 @@ CAPABILITIES: Dict[str, CapabilitySpec] = {
             description="General CDN/origin isolation via cdncheck (reconFTW cdnprovider)",
             required_tools=["cdncheck"],
             optional_tools=["hakoriginfinder", "anew"],  # hakoriginfinder only if CDN_BYPASS ever enabled
-            rtw_mode="source_only",
+            rtw_mode="cli",
             seeds=["live/urls.txt"],
         ),
         CapabilitySpec(
@@ -156,7 +156,7 @@ CAPABILITIES: Dict[str, CapabilitySpec] = {
             description="JS source-map/AST secret extraction (reconFTW jschecks)",
             required_tools=["sourcemapper", "jsluice", "subjs"],
             optional_tools=["mantra", "anew"],
-            rtw_mode="source_only",
+            rtw_mode="cli",
             seeds=["live/urls.txt"],
         ),
     ]
@@ -630,7 +630,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"{args.check}: {ev['state']} ({ev['reason']})")
         return 0
     if args.banner:
-        print_banner(state)
+        # Live-run fix (Step 1D): --banner without --rebuild used the stale
+        # cached capabilities.json, so it could show "PDCP_API_KEY MISSING"
+        # (evaluated live in the keys table) next to a stale cached
+        # "CAP_ASN_ENUM RTW_AVAILABLE" row. Evaluate every capability against
+        # the CURRENT process environment (PDCP_API_KEY, RTW_HOME) instead.
+        print_banner({cap_id: evaluate_capability(cap_id)["state"]
+                      for cap_id in CAPABILITIES})
         return 0
     if args.json:
         print(json.dumps(state, indent=2, sort_keys=True))

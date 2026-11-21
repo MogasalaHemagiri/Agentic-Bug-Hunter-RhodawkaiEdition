@@ -1578,10 +1578,52 @@ Keep it under 80 words total."""
             session_session_path = repo_root / "targets" / target / "sessions" / session_id / "autonomous_session.json"
         autonomous_session = self._read_file_sample(str(session_session_path), 2500)
 
+        # Step 2D: token-smart canonical truth. When recon_fusion.py has
+        # produced recon_truth.json (+ delta.json), the prompt reads the
+        # deduplicated, provenance-tagged truth — cluster representatives
+        # only, tool_health, js endpoints, ports — instead of raw dumps.
+        truth_payload = ""
+        delta_payload = ""
+        truth_path = recon_path / "recon_truth.json"
+        if truth_path.exists():
+            try:
+                truth = json.loads(truth_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                truth = None
+            if isinstance(truth, dict):
+                reps = [h for h in truth.get("hosts", []) if h.get("is_cluster_rep")]
+                compact = {
+                    "counts": truth.get("counts", {}),
+                    "tool_health": truth.get("tool_health", []),
+                    "cluster_representative_hosts": reps[:40],
+                    "js_endpoints": truth.get("js_endpoints", [])[:80],
+                    "open_ports": truth.get("ports", [])[:80],
+                    "notable_urls": [u.get("url") for u in truth.get("urls", [])[:60]],
+                }
+                truth_payload = json.dumps(compact, indent=2, default=str)
+                try:
+                    delta = json.loads(
+                        (recon_path / "delta.json").read_text(encoding="utf-8"))
+                    if isinstance(delta, dict) and delta.get("has_previous_run"):
+                        delta_payload = json.dumps(
+                            {k: (v[:40] if isinstance(v, list) else v)
+                             for k, v in delta.items()}, indent=2, default=str)
+                except (OSError, ValueError):
+                    delta_payload = ""
+                # The raw httpx dump is redundant when truth exists (its
+                # content is summarized by the cluster representatives above).
+                httpx_sample = ""
+
         prompt = f"""I just completed recon on target: {target}
 
 ## Recon Numbers
 {json.dumps(summary, indent=2)}
+
+## Canonical truth (recon_truth.json — dedup + provenance + SimHash clusters)
+{delimit_untrusted("canonical recon truth", truth_payload) if truth_payload else "(not available — falling back to raw artifacts)"}
+
+## Run-over-run delta (delta.json)
+{delimit_untrusted("recon delta vs previous run", delta_payload) if delta_payload else "(first run for this target)"}
 
 ## CVE-Priority (tech detection + CVSS scoring)
 {delimit_untrusted("CVE-priority JSON", priority_json) if priority_json else "(not available)"}
@@ -1645,8 +1687,26 @@ appear verbatim in the data sections above. Do NOT invent, guess, or fabricate
 endpoints, URLs, APIs, credentials, or findings. If the data shows "(none)" or
 "(empty)", state that explicitly and do not substitute hypothetical examples."""
 
+        # Step 2D: the payload passes through ABH's redaction layer before it
+        # reaches the LLM, and the saved brief is redacted too.
+        try:
+            from memory.redaction import redact_text
+        except ImportError:
+            redact_text = None
+        if redact_text is not None:
+            prompt = redact_text(prompt)
+
         result = self._stream(prompt, f"Recon Analysis → {target}", MAX_RESP)
         self._save_analysis(recon_dir, "01_recon_analysis.md", result)
+        # Step 2D: also write the compact brief next to recon_truth.json.
+        try:
+            brief_path = Path(recon_dir) / "recon_brief.md"
+            brief_path.write_text(
+                f"Generated: {datetime.now()}  Model: {self.model}\n\n"
+                f"{redact_text(result) if redact_text else result}")
+            print(f"{GREEN}[+] Saved: {brief_path}{NC}")
+        except OSError:
+            pass
         return result
 
     # ─────────────────────────────────────────────────────────────────────────

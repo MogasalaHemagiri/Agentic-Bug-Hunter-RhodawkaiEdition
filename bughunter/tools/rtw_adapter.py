@@ -32,25 +32,41 @@ Six-step decision flow (no LLM judgment at any step):
    trusted as the boundary; this is ABH's one real safety advantage over
    reconFTW and the fork must not weaken it. Blocked calls are logged to
    hunt-memory/audit.jsonl and NO reconFTW subprocess is spawned.
-6. Invoke via reconFTW's own supported single-function interface:
-       ./reconftw.sh -d <target> -c <fn> -f <ephemeral_override.cfg> -o <workdir>
-   (subprocess, never sourced into this process). For sub_permut,
-   cdnprovider, and jschecks — which want a seed list so reconFTW does not
-   re-run subfinder/httpx from scratch — the isolated workdir is
-   pre-populated with ABH's already-discovered subdomains/all.txt /
-   live/urls.txt and the function is invoked via `source reconftw.sh
-   --source-only` in a clean subshell (reconFTW explicitly supports this
-   for its own test suite).
+6. Invoke via reconFTW's own supported single-function interface — ALL 7
+   capabilities (live-run Step 1B fix: the previous `source reconftw.sh
+   --source-only` subshells silently no-op'd for sub_permut / cdnprovider /
+   jschecks — rc=0 in 0.1s with empty workdirs):
+       bash <RTW_HOME>/reconftw.sh -d <target> -c <fn> -f <workdir>/rtw_override.cfg \
+            -o <workdir> --no-banner
+   (subprocess, never sourced into this process). Capabilities that want a
+   seed list so reconFTW does not re-run subfinder/httpx from scratch get the
+   isolated workdir pre-populated with ABH's already-discovered
+   subdomains/subdomains.txt / webs/webs.txt BEFORE the call.
 
 An ephemeral rtw_override.cfg is written on EVERY call, always:
 VULNS_GENERAL=false, CDN_BYPASS=false, NOTIFICATION=false, and rate limits
 mapped down from ABH's own RateLimiter ceiling (recon_rps=10) — reconFTW's
-aggressive defaults (TLSX_THREADS=1000) stay capped. modules/vulns.sh is
-never in scope: ABH's verifier spine is the only thing allowed to promote
-a finding, and reconFTW's raw scanner output never bypasses it.
+aggressive defaults (TLSX_THREADS=1000) stay capped. The requested function's
+own gate flag(s) (ASN_ENUM, SUBPERMUTE, CDN_IP, JSCHECKS, VIRTUALHOSTS,
+FAVIRECON, TLSX_PORTS/TLS_IP_PIVOTS) are explicitly enabled in the cfg.
+modules/vulns.sh is never in scope: ABH's verifier spine is the only thing
+allowed to promote a finding, and reconFTW's raw scanner output never
+bypasses it.
+
+Honesty accounting (live-run Step 1B fix — the pre-seeded input lines used to
+be counted as findings, so a 0.1s no-op reported COMPLETED_WITH_FINDINGS with
+findings_count: 2):
+  - the exact pre-seeded line set is snapshotted BEFORE launch;
+  - net_new_count = output lines − seed lines, recorded on the manifest, and
+    COMPLETED_WITH_FINDINGS requires returncode == 0 AND net_new_count > 0;
+  - stdout/stderr are scanned for reconFTW skip/error markers (SKIP,
+    reason: config, command not found, No candidate, API key) — a silent
+    skip is reported as SKIPPED_SILENT (or DEGRADED when net-new lines still
+    landed) with the exact extracted reason in "reason".
 
 Result states (traced on the manifest, mirroring ABH's tracer vocabulary):
     COMPLETED_WITH_FINDINGS | COMPLETED_EMPTY | FAILED | TIMEOUT | SKIPPED
+    | SKIPPED_SILENT | DEGRADED
 """
 
 from __future__ import annotations
@@ -109,6 +125,13 @@ RESULT_COMPLETED_EMPTY = "COMPLETED_EMPTY"
 RESULT_FAILED = "FAILED"
 RESULT_TIMEOUT = "TIMEOUT"
 RESULT_SKIPPED = "SKIPPED"
+RESULT_SKIPPED_SILENT = "SKIPPED_SILENT"
+RESULT_DEGRADED = "DEGRADED"
+
+# reconFTW skip/error markers scanned in the delegated function's combined
+# stdout+stderr (Step 1B fix 3 — silent 0.1s no-ops are surfaced, not scored).
+RTW_SKIP_MARKERS = ("skip", "reason: config", "command not found",
+                    "no candidate", "api key")
 
 # Same freshness constant agents/autopilot.md uses for cached recon ("if found
 # and < 7 days old, skip").
@@ -150,6 +173,21 @@ RTW_OVERRIDE_BASE = {
     "FAVIRECON": "true",
     "CDN_IP": "true",
     "JSCHECKS": "true",
+    "TLSX_PORTS": "true",
+    "TLS_IP_PIVOTS": "true",
+}
+
+# Per-function gate flags — the REQUESTED function's flag(s) are written to
+# the override cfg explicitly (Step 1B fix 1) so a silent config-gate skip is
+# impossible for the capability actually being delegated.
+FUNCTION_GATE_FLAGS = {
+    "sub_asn": ["ASN_ENUM"],
+    "sub_permut": ["SUBPERMUTE"],
+    "cdnprovider": ["CDN_IP"],
+    "jschecks": ["JSCHECKS"],
+    "virtualhosts": ["VIRTUALHOSTS"],
+    "favirecon_tech": ["FAVIRECON"],
+    "tls_ip_pivots": ["TLSX_PORTS", "TLS_IP_PIVOTS"],
 }
 
 MANIFEST_FILENAME = "rtw_manifest.json"
@@ -263,22 +301,27 @@ def audit_scope_block(target: str, reason: str) -> None:
 
 # ── Ephemeral override cfg ────────────────────────────────────────────────────
 
-def override_cfg_text() -> str:
+def override_cfg_text(spec: Optional[CapabilitySpec] = None) -> str:
     lines = [
         "# rtw_override.cfg — ephemeral, written by rtw_adapter.py on every call.",
         "# Safety envelope: vuln scanning off, origin bypass off, notifications",
         "# off, rates capped to ABH's RateLimiter ceiling. Never edit reconFTW's",
         "# own reconftw.cfg for this integration.",
     ]
+    if spec is not None:
+        flags = FUNCTION_GATE_FLAGS.get(spec.rtw_function, [])
+        lines.append(f"# Requested function: {spec.rtw_function} — gate flag(s) "
+                     f"explicitly enabled below: {', '.join(flags) or '(none)'}.")
     for key, val in RTW_OVERRIDE_BASE.items():
         lines.append(f"{key}={val}")
     return "\n".join(lines) + "\n"
 
 
-def write_override_cfg(workdir: Path) -> Path:
+def write_override_cfg(workdir: Path,
+                       spec: Optional[CapabilitySpec] = None) -> Path:
     workdir.mkdir(parents=True, exist_ok=True)
     cfg = workdir / "rtw_override.cfg"
-    cfg.write_text(override_cfg_text(), encoding="utf-8")
+    cfg.write_text(override_cfg_text(spec), encoding="utf-8")
     return cfg
 
 
@@ -286,7 +329,8 @@ def write_override_cfg(workdir: Path) -> Path:
 
 def build_cli_command(spec: CapabilitySpec, target: str, workdir: Path,
                       cfg: Path) -> List[str]:
-    """Step 6 (cli mode): reconFTW's supported single-function interface.
+    """Step 6 (the ONLY invocation mode — Step 1B removed the brittle
+    --source-only subshells): reconFTW's supported single-function interface.
     Subprocess, never sourced into this process."""
     return [
         "bash", str(rtw_script()),
@@ -296,40 +340,6 @@ def build_cli_command(spec: CapabilitySpec, target: str, workdir: Path,
         "-o", str(workdir),
         "--no-banner",
     ]
-
-
-def build_source_script(spec: CapabilitySpec, target: str, workdir: Path,
-                        cfg: Path) -> str:
-    """Step 6 (source_only mode): clean subshell that sources reconftw.sh
-    --source-only (reconFTW's own test-suite mechanism: loads every module and
-    function definition, returns before arg parsing / config sourcing), then
-    sources the ephemeral override cfg, then calls the one function from
-    inside the pre-populated workdir. Never runs reconFTW's argument parser,
-    banner, modes, or its install.sh."""
-    return (
-        # Live-run fix: `set -u` killed the source-only subshell with rc=127 —
-        # reconFTW's Bash modules read uninitialized guard variables
-        # (lib/common.sh: _COMMON_SH_LOADED). Keep -e/-o pipefail, drop -u.
-        "set -eo pipefail\n"
-        # Live-run fix: pin reconFTW's lib/ + modules/ to $RTW_HOME. When
-        # reconftw.sh is sourced, $0 is the invoking bash (not the script), so
-        # reconFTW's own SCRIPTPATH derivation would resolve to the CWD or a
-        # stale /opt/reconftw install; exporting it explicitly makes the
-        # source-only load deterministic.
-        f"export SCRIPTPATH={shlex.quote(str(rtw_home()))}\n"
-        f"source {shlex.quote(str(rtw_script()))} --source-only\n"
-        f"source {shlex.quote(str(cfg))}\n"
-        f"export ASN_ENUM=true SUBPERMUTE=true VIRTUALHOSTS=true "
-        f"FAVIRECON=true CDN_IP=true JSCHECKS=true\n"
-        f"export VULNS_GENERAL=false CDN_BYPASS=false NOTIFICATION=false\n"
-        f"cd {shlex.quote(str(workdir))}\n"
-        f"{spec.rtw_function}\n"
-    )
-
-
-def build_source_command(spec: CapabilitySpec, target: str, workdir: Path,
-                         cfg: Path) -> List[str]:
-    return ["bash", "-c", build_source_script(spec, target, workdir, cfg)]
 
 
 def seed_files(spec: CapabilitySpec, recon_dir: Path, workdir: Path) -> List[str]:
@@ -562,6 +572,90 @@ def write_standard_outputs(recon_dir: Path, rtw_function: str, workdir: Path,
     return counts
 
 
+# ── Honest accounting (Step 1B fixes 2+3) ─────────────────────────────────────
+
+def _snapshot_seed_lines(workdir: Path, seeded: List[str]) -> set:
+    """Exact set of pre-seeded lines (stripped), snapshotted BEFORE
+    reconftw.sh launches — the baseline for net_new_count."""
+    lines = set()
+    for rel in seeded:
+        path = workdir / rel
+        try:
+            for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = raw.strip()
+                if stripped:
+                    lines.add(stripped)
+        except OSError:
+            continue
+    return lines
+
+
+def _drop_seed_lines(workdir: Path, outputs: List[str],
+                     seed_lines: set) -> Tuple[List[str], int]:
+    """Rewrite each harvested output net-new-only (drop the pre-seeded lines
+    so they are neither counted nor published) and return
+    (re-harvested outputs, net_new_line_count)."""
+    if not seed_lines:
+        return outputs, findings_count(workdir, outputs)
+    net_new = 0
+    for rel in list(outputs):
+        path = workdir / rel
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        kept = [line for line in lines
+                if line.strip() and line.strip() not in seed_lines]
+        if len(kept) != len(lines):
+            try:
+                path.write_text("\n".join(kept) + ("\n" if kept else ""),
+                                encoding="utf-8")
+            except OSError:
+                continue
+        net_new += len(kept)
+    return harvest_outputs(workdir), net_new
+
+
+def _detect_skip_reason(stdout_text: str, stderr_text: str) -> str:
+    """Step 1B fix 3: scan the delegated function's combined stdout/stderr for
+    reconFTW skip/error markers. Returns the exact extracted reason or ""."""
+    blob = f"{stdout_text or ''}\n{stderr_text or ''}"
+    for raw in blob.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+        for marker in RTW_SKIP_MARKERS:
+            if marker in low:
+                return f"skip marker '{marker}' in reconftw output: {stripped[:200]}"
+    return ""
+
+
+def format_health_table(manifest: dict) -> str:
+    """Step 1B fix 4: the recon health table —
+    Capability | Function | Status | Duration | Net-New | Reason — from the
+    latest manifest entry per capability. Printed at the end of
+    recon_engine.sh so a 0.1s silent no-op can never hide behind rc=0."""
+    latest: Dict[str, dict] = {}
+    for entry in manifest.get("entries", []):
+        cid = entry.get("capability_id")
+        if cid:
+            latest[cid] = entry
+    header = (f"{'Capability':<18} | {'Function':<16} | {'Status':<22} | "
+              f"{'Duration':>8} | {'Net-New':>7} | Reason")
+    rows = [header, "-" * len(header)]
+    for cid in sorted(latest):
+        e = latest[cid]
+        rows.append(
+            f"{cid:<18} | {str(e.get('rtw_function', '?')):<16} | "
+            f"{str(e.get('status', '?')):<22} | "
+            f"{str(e.get('duration_secs', '-')):>8} | "
+            f"{str(e.get('net_new_count', '-')):>7} | "
+            f"{str(e.get('reason', '') or '')}"
+        )
+    return "\n".join(rows)
+
+
 # ── The six-step flow ─────────────────────────────────────────────────────────
 
 def run_capability(capability_id: str, target: str,
@@ -645,12 +739,13 @@ def run_capability(capability_id: str, target: str,
     workdir = root / f"{spec.rtw_function}_{int(time.time())}"
     workdir.mkdir(parents=True, exist_ok=True)
     seeded = seed_files(spec, recon_dir, workdir)
-    cfg = write_override_cfg(workdir)
+    cfg = write_override_cfg(workdir, spec)
+    # Step 1B fix 2: snapshot the EXACT pre-seeded line set BEFORE launching
+    # reconftw.sh — outputs are diffed against it (net_new_count), so seeded
+    # inputs can never be counted or published as delegate findings again.
+    seed_lines = _snapshot_seed_lines(workdir, seeded)
 
-    if spec.rtw_mode == "source_only":
-        argv = build_source_command(spec, target, workdir, cfg)
-    else:
-        argv = build_cli_command(spec, target, workdir, cfg)
+    argv = build_cli_command(spec, target, workdir, cfg)
 
     child_env = env or os.environ.copy()
     started_iso = _utcnow()
@@ -661,10 +756,12 @@ def run_capability(capability_id: str, target: str,
             capture_output=True, text=True, timeout=timeout_secs,
         )
         rc = proc.returncode
+        stdout_text = proc.stdout or ""
         stderr_tail = (proc.stderr or "")[-2000:]
     except subprocess.TimeoutExpired:
         entry = _entry(spec, target_host, digest, RESULT_TIMEOUT, started_iso,
                        argv=argv, workdir=str(workdir), seeded=seeded,
+                       net_new_count=0,
                        reason=f"timeout after {timeout_secs}s")
         upsert_entry(manifest, entry)
         save_manifest(target, manifest)
@@ -672,29 +769,23 @@ def run_capability(capability_id: str, target: str,
                        entry=entry, reason=f"timeout after {timeout_secs}s")
     except OSError as exc:
         entry = _entry(spec, target_host, digest, RESULT_FAILED, started_iso,
-                       argv=argv, workdir=str(workdir), seeded=seeded, reason=str(exc))
+                       argv=argv, workdir=str(workdir), seeded=seeded,
+                       net_new_count=0, reason=str(exc))
         upsert_entry(manifest, entry)
         save_manifest(target, manifest)
         return _result(RESULT_FAILED, capability_id, target, digest=digest,
                        entry=entry, reason=f"subprocess error: {exc}")
-
-    outputs = harvest_outputs(workdir)
-    findings = findings_count(workdir, outputs)
-
-    if rc != 0:
-        status = RESULT_FAILED
-    elif findings > 0:
-        status = RESULT_COMPLETED_WITH_FINDINGS
-    else:
-        status = RESULT_COMPLETED_EMPTY
 
     if rc != 0:
         # Live-run fix: a failed function produced nothing. Never publish or
         # count the pre-seeded inputs (e.g. subdomains/subdomains.txt) as
         # findings — they would otherwise surface as findings_count and rows
         # in the Recon Summary despite the non-zero exit.
+        status = RESULT_FAILED
         outputs = []
         findings = 0
+        net_new_count = 0
+        skip_reason = ""
         filter_stats = {"files_filtered": 0, "lines_in": 0,
                         "lines_kept": 0, "lines_dropped": 0}
         published = []
@@ -704,8 +795,19 @@ def run_capability(capability_id: str, target: str,
         filter_stats = filter_outputs_to_scope(workdir, checker, target)
         # Re-harvest: filtering may have emptied files.
         outputs = harvest_outputs(workdir)
-        findings = findings_count(workdir, outputs)
-        if status == RESULT_COMPLETED_WITH_FINDINGS and findings == 0:
+        # Step 1B fix 2 — seed diffing: strip the pre-seeded lines from the
+        # harvested outputs (files rewritten net-new-only), then count.
+        outputs, net_new_count = _drop_seed_lines(workdir, outputs, seed_lines)
+        findings = net_new_count
+        # Step 1B fix 3 — silent-skip detection from stdout/stderr.
+        skip_reason = _detect_skip_reason(stdout_text, stderr_tail)
+        if skip_reason:
+            # The function reported a skip/error marker: never score it as a
+            # clean run. Net-new output turns it DEGRADED, not healthy.
+            status = RESULT_DEGRADED if net_new_count > 0 else RESULT_SKIPPED_SILENT
+        elif net_new_count > 0:
+            status = RESULT_COMPLETED_WITH_FINDINGS
+        else:
             status = RESULT_COMPLETED_EMPTY
 
         published = publish_outputs(spec, target, workdir, recon_dir, outputs)
@@ -715,16 +817,19 @@ def run_capability(capability_id: str, target: str,
     entry = _entry(spec, target_host, digest, status, started_iso, argv=argv,
                    workdir=str(workdir), seeded=seeded, outputs=outputs,
                    published=published, standard_outputs=standard_counts,
-                   findings_count=findings,
+                   findings_count=findings, net_new_count=net_new_count,
+                   seed_lines=len(seed_lines),
                    filter=filter_stats, duration_secs=round(time.time() - t0, 1),
                    returncode=rc)
+    if skip_reason:
+        entry["reason"] = skip_reason
     if stderr_tail.strip():
         entry["stderr_tail"] = stderr_tail[-800:]
     upsert_entry(manifest, entry)
     save_manifest(target, manifest)
 
     return _result(status, capability_id, target, digest=digest, entry=entry,
-                   reason=_status_reason(status, findings, rc))
+                   reason=skip_reason or _status_reason(status, net_new_count, rc))
 
 
 def run_all(target: str, **kwargs) -> List[dict]:
@@ -784,8 +889,12 @@ def _status_reason(status: str, findings: int, rc: int) -> str:
     if status == RESULT_FAILED:
         return f"reconftw function exited rc={rc}"
     if status == RESULT_COMPLETED_WITH_FINDINGS:
-        return f"{findings} finding line(s) collected"
-    return "function completed, no output lines"
+        return f"{findings} net-new finding line(s) collected"
+    if status == RESULT_SKIPPED_SILENT:
+        return "function exited rc=0 but produced no net-new output (silent skip)"
+    if status == RESULT_DEGRADED:
+        return f"skip markers in reconftw output, but {findings} net-new line(s) collected"
+    return "function completed, no net-new output lines"
 
 
 def _entry(spec, target_host, digest, status, started_iso, **extra) -> dict:
@@ -879,6 +988,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_status.add_argument("--target", required=True)
     p_status.add_argument("--json", action="store_true")
 
+    p_health = sub.add_parser("health-table",
+                              help="print the recon health table "
+                                   "(Capability | Function | Status | Duration | Net-New | Reason) "
+                                   "from rtw_manifest.json — recon_engine.sh prints it at the end")
+    p_health.add_argument("--target", required=True)
+
     p_audit = sub.add_parser("audit-block",
                              help="append a schema-validated scope-block entry to "
                                   "hunt-memory/audit.jsonl (used by the recon_engine.sh "
@@ -903,6 +1018,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                       f"finished={e.get('finished')} findings={e.get('findings_count', '-')}")
         return 0
 
+    if args.cmd == "health-table":
+        manifest = load_manifest(args.target)
+        if manifest.get("entries"):
+            print(format_health_table(manifest))
+        return 0
+
     if args.cmd == "audit-block":
         audit_scope_block(args.target, args.reason)
         return 0
@@ -919,14 +1040,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 continue
             workdir = Path(args.recon_dir or (_default_recon_dir(host_key(args.target)))) / "rtw" / ".plan"
             workdir.mkdir(parents=True, exist_ok=True)
-            cfg = write_override_cfg(workdir)
-            if spec.rtw_mode == "source_only":
-                print(f"[plan] {cap_id} ({spec.rtw_function}, source-only subshell):")
-                print(build_source_script(spec, args.target, workdir, cfg))
-            else:
-                print(f"[plan] {cap_id} ({spec.rtw_function}):")
-                print("  " + " ".join(shlex.quote(a) for a in
-                                       build_cli_command(spec, args.target, workdir, cfg)))
+            cfg = write_override_cfg(workdir, spec)
+            print(f"[plan] {cap_id} ({spec.rtw_function}):")
+            print("  " + " ".join(shlex.quote(a) for a in
+                                   build_cli_command(spec, args.target, workdir, cfg)))
         return rc
 
     if args.cmd == "run":

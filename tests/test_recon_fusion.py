@@ -1,0 +1,319 @@
+"""Unit tests for bughunter/tools/recon_fusion.py (Step 2B/2C).
+
+Covers the four acceptance areas from the build brief:
+  - recon_truth.json provenance merging (hosts/urls/js/ports with
+    discovered_by[]) + tool_health ingestion from rtw_manifest.json
+  - URL canonicalization (utm_* stripped, identical parameter-key
+    signatures collapsed)
+  - pure-Python 64-bit SimHash host clustering (Hamming <= 3, one
+    is_cluster_rep per cluster)
+  - CDN_EDGE / THIRD_PARTY_SAAS / FIRST_PARTY_ORIGIN classification
+  - delta.json run-to-run diffing (+ prev-truth archive + mirror copy)
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PKG_ROOT = REPO_ROOT / "bughunter"
+for path in (str(PKG_ROOT), str(PKG_ROOT / "tools")):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+from tools import recon_fusion as rf  # noqa: E402
+
+
+@pytest.fixture
+def isolated_home(tmp_path, monkeypatch):
+    home = tmp_path / "bh-home"
+    monkeypatch.setenv("BUGHUNTER_HOME", str(home))
+    return home
+
+
+def write(recon_dir: Path, rel: str, text: str) -> Path:
+    path = recon_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+@pytest.fixture
+def recon_dir(tmp_path):
+    rd = tmp_path / "recon" / "t.example.com"
+    for sub in ("subdomains", "live", "ports", "urls", "js", "hosts"):
+        (rd / sub).mkdir(parents=True)
+    write(rd, "subdomains/subfinder.txt", "api.t.example.com\n")
+    write(rd, "subdomains/crtsh.txt",
+          "api.t.example.com\nwww.t.example.com\n")
+    write(rd, "subdomains/all.txt",
+          "api.t.example.com\nwww.t.example.com\nt.example.com\n")
+    write(rd, "live/httpx_full.txt",
+          "https://t.example.com [200] [Example Home] [nginx] [2048]\n"
+          "https://api.t.example.com [200] [Example Home] [nginx] [2050]\n"
+          "https://cdn.t.example.com [200] [Example CDN] [cloudflare] [99]\n")
+    write(rd, "live/urls.txt",
+          "https://t.example.com\nhttps://api.t.example.com\n"
+          "https://cdn.t.example.com\n")
+    write(rd, "ports/nmap_greppable.txt",
+          "Host: 93.184.216.34 () Ports: 80/open/tcp//http///, "
+          "443/open/tcp//https///\n")
+    write(rd, "urls/gau.txt",
+          "https://t.example.com/blog?page=2&utm_source=feed\n")
+    write(rd, "urls/katana.txt",
+          "https://t.example.com/blog?page=3&utm_source=feed\n"
+          "https://t.example.com/api/v1/users\n")
+    write(rd, "urls/all.txt",
+          "https://t.example.com/blog?page=2&utm_source=feed\n"
+          "https://t.example.com/api/v1/users\n")
+    write(rd, "js/endpoints.txt", "/api/v1/users\n/static/app.js\n")
+    return rd
+
+
+class TestCanonicalUrl:
+    def test_utm_and_click_ids_stripped(self):
+        canon = rf.canonical_url(
+            "https://App.Example.com/a?utm_source=x&utm_campaign=y"
+            "&id=7&fbclid=z")
+        assert canon == "https://app.example.com/a?id=7"
+        assert "utm_" not in canon and "fbclid" not in canon
+
+    def test_other_params_kept_and_sorted(self):
+        assert rf.canonical_url("https://h.example/p?b=2&a=1") == \
+            "https://h.example/p?a=1&b=2"
+
+    def test_param_signature_collapses_same_keys(self):
+        assert rf.param_signature("https://h.example/s?user=alice") == \
+            rf.param_signature("https://h.example/s?user=bob")
+        assert rf.param_signature("https://h.example/s?page=2") != \
+            rf.param_signature("https://h.example/s?user=alice")
+
+    def test_garbage_passthrough(self):
+        assert rf.canonical_url("not-a-url") == "not-a-url"
+
+
+class TestClassifyHost:
+    def test_cdn_via_cname_suffix(self):
+        cls, provider = rf.classify_host(
+            "app.example.com", cname="example.cloudflare.net.")
+        assert (cls, provider) == (rf.CLASS_CDN_EDGE, "Cloudflare")
+
+    def test_cdn_via_tech_token(self):
+        cls, provider = rf.classify_host("app.example.com", tech="cloudflare")
+        assert cls == rf.CLASS_CDN_EDGE and provider.lower() == "cloudflare"
+
+    def test_major_cdn_providers(self):
+        for cname, provider in (("x.vercel-dns.com", "Vercel"),
+                                ("y.akamaiedge.net", "Akamai"),
+                                ("z.fastly.net", "Fastly"),
+                                ("d.cloudfront.net", "CloudFront")):
+            cls, got = rf.classify_host("h.example", cname=cname)
+            assert cls == rf.CLASS_CDN_EDGE and got == provider
+
+    def test_saas_beats_cdn_and_plain_is_origin(self):
+        # SaaS suffix wins regardless of CDN tech evidence.
+        cls, provider = rf.classify_host("widgets.myshopify.com",
+                                         tech="cloudflare")
+        assert (cls, provider) == (rf.CLASS_SAAS, "Shopify")
+        # A plain host behind Cloudflare tech is still a CDN edge, not origin.
+        cls2, provider2 = rf.classify_host("shop.example.com", tech="cloudflare")
+        assert (cls2, provider2) == (rf.CLASS_CDN_EDGE, "Cloudflare")
+        # No evidence at all → first-party origin.
+        assert rf.classify_host("origin.example.com") == (rf.CLASS_ORIGIN, "")
+
+    def test_third_party_saas_suffixes(self):
+        for host, provider in (("brand.zendesk.com", "Zendesk"),
+                               ("pages.github.io", "GitHub Pages"),
+                               ("site.hubspot.net", "HubSpot")):
+            cls, got = rf.classify_host(host)
+            assert cls == rf.CLASS_SAAS and got == provider
+
+
+class TestSimHashClustering:
+    @staticmethod
+    def _hash(rec):
+        return rf.simhash64(rf.host_features(rec["status_code"], rec["title"],
+                                             rec["tech"], rec["content_length"]))
+
+    def test_identical_pages_cluster_with_one_rep(self):
+        recs = [{"host": name, "status_code": 200, "title": "Welcome to Example",
+                 "tech": ["nginx"], "content_length": 2048}
+                for name in ("a.example.com", "b.example.com", "c.example.com")]
+        for rec in recs:
+            rec["simhash"] = self._hash(rec)
+        rf.cluster_hosts(recs)
+        assert len({h["cluster_id"] for h in recs}) == 1
+        assert sum(1 for h in recs if h["is_cluster_rep"]) == 1
+        assert recs[0]["is_cluster_rep"] is True
+        assert recs[1]["is_cluster_rep"] is False
+
+    def test_near_identical_page_clusters_via_content_bucket(self):
+        """2048 vs 2050 bytes land in the same content-length bucket → the
+        near-duplicate mirrors of one app cluster together (Hamming 0)."""
+        recs = [{"host": "www.example.com", "status_code": 200,
+                 "title": "Example Home", "tech": ["nginx"],
+                 "content_length": 2048},
+                {"host": "app.example.com", "status_code": 200,
+                 "title": "Example Home", "tech": ["nginx"],
+                 "content_length": 2050}]
+        for rec in recs:
+            rec["simhash"] = self._hash(rec)
+        rf.cluster_hosts(recs)
+        assert recs[0]["cluster_id"] == recs[1]["cluster_id"]
+
+    def test_different_pages_separate_clusters(self):
+        recs = [{"host": "app.example.com", "status_code": 200,
+                 "title": "Dashboard", "tech": ["react"],
+                 "content_length": 5000},
+                {"host": "mail.example.com", "status_code": 401,
+                 "title": "Sign in to webmail", "tech": ["express"],
+                 "content_length": 120}]
+        for rec in recs:
+            rec["simhash"] = self._hash(rec)
+        rf.cluster_hosts(recs)
+        assert recs[0]["cluster_id"] != recs[1]["cluster_id"]
+        assert all(h["is_cluster_rep"] for h in recs)
+
+    def test_deterministic_64bit_and_hamming(self):
+        a = rf.simhash64(["status=200", "title=hello", "clbucket=2"])
+        b = rf.simhash64(["status=200", "title=hello", "clbucket=2"])
+        c = rf.simhash64(["status=404", "title=completely different content",
+                          "clbucket=5", "tech=iis"])
+        assert 0 <= a < 2 ** 64
+        assert a == b and rf.hamming_distance(a, b) == 0
+        assert rf.hamming_distance(a, c) > 3
+
+    def test_content_length_bucket_boundaries(self):
+        assert rf.content_length_bucket(None) == 0
+        assert rf.content_length_bucket(0) == 0
+        assert rf.content_length_bucket(999) == 1
+        assert rf.content_length_bucket(1000) == 2
+        assert rf.content_length_bucket(999_999) == 4
+        assert rf.content_length_bucket(2_000_000) == 5
+
+
+class TestFuse:
+    def test_truth_schema_counts_provenance(self, recon_dir, isolated_home):
+        truth, delta = rf.fuse(recon_dir, "t.example.com",
+                               scope_domains=["*.t.example.com"])
+        assert truth["schema_version"] == "1.0"
+        assert truth["target"] == "t.example.com"
+        assert truth["scope_patterns"]["domains"] == ["*.t.example.com"]
+        c = truth["counts"]
+        assert c["subdomains"] == 3
+        assert c["live_hosts"] == 3
+        # t + api share features (same title/status/tech, same CL bucket) →
+        # one cluster; cdn differs → second cluster.
+        assert c["unique_host_clusters"] == 2
+        assert c["cdn_edges"] == 1
+        assert c["origin_ips"] == 0          # no resolution evidence ingested
+        assert c["open_ports"] == 2
+        assert c["js_endpoints"] == 2
+        # URL canonicalization: utm stripped; page=2 vs page=3 collapse on the
+        # same parameter-key signature; the API URL stays distinct.
+        assert c["unique_urls"] == 2
+        urls = {u["url"]: u for u in truth["urls"]}
+        assert "https://t.example.com/blog?page=2" in urls
+        assert all("utm_source" not in u for u in urls)
+        blog = urls["https://t.example.com/blog?page=2"]
+        assert set(blog["discovered_by"]) == {"urls/gau.txt", "urls/katana.txt",
+                                              "urls/all.txt"}
+        # Host provenance merging.
+        hosts = {h["host"]: h for h in truth["hosts"]}
+        api = hosts["api.t.example.com"]
+        assert "subdomains/subfinder.txt" in api["discovered_by"]
+        assert "subdomains/crtsh.txt" in api["discovered_by"]
+        assert "live/httpx_full.txt" in api["discovered_by"]
+        # Clustering + reps (sorted order: api < cdn < t).
+        assert hosts["api.t.example.com"]["cluster_id"] == \
+            hosts["t.example.com"]["cluster_id"]
+        assert hosts["cdn.t.example.com"]["cluster_id"] != \
+            hosts["t.example.com"]["cluster_id"]
+        assert hosts["api.t.example.com"]["is_cluster_rep"] is True
+        assert hosts["t.example.com"]["is_cluster_rep"] is False
+        assert hosts["cdn.t.example.com"]["is_cluster_rep"] is True
+        # Asset classes: cdn host via tech token; plain hosts origin.
+        assert hosts["cdn.t.example.com"]["asset_class"] == rf.CLASS_CDN_EDGE
+        assert hosts["t.example.com"]["asset_class"] == rf.CLASS_ORIGIN
+        # JS endpoints + ports carry provenance.
+        assert {e["endpoint"] for e in truth["js_endpoints"]} == \
+            {"/api/v1/users", "/static/app.js"}
+        assert truth["ports"][0]["port"] == 80
+        assert truth["ports"][0]["discovered_by"] == ["ports/nmap_greppable.txt"]
+        assert delta["has_previous_run"] is False
+
+    def test_tool_health_from_manifest(self, recon_dir, isolated_home):
+        manifest_dir = isolated_home / "recon" / "t.example.com"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "rtw_manifest.json").write_text(json.dumps({
+            "version": 1, "ttl_days": 7, "entries": [
+                {"capability_id": "CAP_CDN_ISOLATE",
+                 "rtw_function": "cdnprovider",
+                 "status": "COMPLETED_EMPTY", "duration_secs": 0.1,
+                 "net_new_count": 0,
+                 "reason": "function completed, no net-new output lines"},
+            ]}))
+        truth, _ = rf.fuse(recon_dir, "t.example.com")
+        assert truth["tool_health"] == [{
+            "capability_id": "CAP_CDN_ISOLATE", "rtw_function": "cdnprovider",
+            "status": "COMPLETED_EMPTY", "duration_secs": 0.1,
+            "net_new_count": 0,
+            "reason": "function completed, no net-new output lines"}]
+
+    def test_delta_second_run_prev_archive_and_mirror(self, recon_dir,
+                                                      isolated_home):
+        rf.fuse(recon_dir, "t.example.com")
+        mirror = isolated_home / "recon" / "t.example.com" / "recon_truth.json"
+        assert mirror.is_file(), "truth must be mirrored under BUGHUNTER_HOME"
+        assert (recon_dir / "recon_truth.prev.json").exists() is False
+
+        # Next run: one new subdomain, one status flip, one new open port.
+        write(recon_dir, "subdomains/all.txt",
+              "api.t.example.com\nwww.t.example.com\nt.example.com\n"
+              "fresh.t.example.com\n")
+        httpx = (recon_dir / "live" / "httpx_full.txt").read_text().replace(
+            "[200] [Example Home]", "[403] [Example Home]")
+        write(recon_dir, "live/httpx_full.txt", httpx)
+        nmap = (recon_dir / "ports" / "nmap_greppable.txt").read_text().replace(
+            "443/open", "8443/open")
+        write(recon_dir, "ports/nmap_greppable.txt", nmap)
+
+        truth2, delta = rf.fuse(recon_dir, "t.example.com")
+        assert (recon_dir / "recon_truth.prev.json").is_file()
+        assert delta["has_previous_run"] is True
+        assert delta["new_subdomains"] == ["fresh.t.example.com"]
+        assert delta["removed_subdomains"] == []
+        assert {"host": "t.example.com", "from": 200, "to": 403} in \
+            delta["status_code_flips"]
+        assert delta["new_open_ports"] == [{"host": "93.184.216.34",
+                                            "port": 8443}]
+        prev = json.loads((recon_dir / "recon_truth.prev.json").read_text())
+        assert prev["counts"]["open_ports"] == 2
+        assert truth2["counts"]["subdomains"] == 4
+        line = rf.format_delta_line(delta)
+        assert "Delta vs previous run" in line and "+1 subdomains" in line
+
+
+class TestClassifyCommand:
+    def test_classify_recon_dir_writes_files(self, recon_dir, isolated_home):
+        write(recon_dir, "hosts/resolution.txt",
+              "cdn.t.example.com\t104.21.5.10\tcdn.example.cloudflare.net\n"
+              "t.example.com\t93.184.216.34\t\n")
+        counts = rf.classify_recon_dir(recon_dir, limit=50)
+        assert counts == {rf.CLASS_CDN_EDGE: 1, rf.CLASS_SAAS: 0,
+                          rf.CLASS_ORIGIN: 2}
+        classes = (recon_dir / "hosts" / "host_classes.txt").read_text()
+        assert "CDN_EDGE" in classes and "Cloudflare" in classes
+        origins = (recon_dir / "hosts" / "origin_targets.txt").read_text().split()
+        # Resolved origin IP wins over the bare host; unresolved origin hosts
+        # fall back to the hostname.
+        assert origins == ["93.184.216.34", "api.t.example.com"]
+
+    def test_cli_classify_and_delta_line(self, recon_dir, isolated_home):
+        rc = rf.main(["classify", "--recon-dir", str(recon_dir)])
+        assert rc == 0
+        assert (recon_dir / "hosts" / "host_classes.txt").is_file()
+        assert rf.main(["delta-line", "--recon-dir", str(recon_dir)]) == 0
