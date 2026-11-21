@@ -183,49 +183,101 @@ class TestRegistry:
         for cap in reg.CAPABILITIES:
             assert cap in out
 
+    def test_banner_evaluates_live_environment(self, capsys, monkeypatch):
+        """Step 1D: --banner without --rebuild evaluates the CURRENT process
+        environment — a stale cached capabilities.json must never make the
+        banner show "CAP_ASN_ENUM RTW_AVAILABLE" next to a live
+        "PDCP_API_KEY MISSING" row (or vice versa)."""
+        # Stale cache claims everything is available (written long ago)…
+        state = {cap: "RTW_AVAILABLE" for cap in reg.CAPABILITIES}
+        Path(os.environ["BUGHUNTER_CAPABILITIES_FILE"]).write_text(json.dumps(state))
+        # …but the live env cannot support delegation: no key, no checkout.
+        monkeypatch.delenv("PDCP_API_KEY", raising=False)
+        reg.main(["--banner"])
+        out = capsys.readouterr().out
+        row = next(line for line in out.splitlines()
+                   if line.strip().startswith("CAP_ASN_ENUM"))
+        assert "RTW_MISSING_DEPS" in row
+        assert "RTW_AVAILABLE" not in row
 
-# ── source-only subshell hardening + failed-run publishing (live-run fixes) ───
+        # Live env satisfied (key set, executable checkout, binaries on PATH)
+        # → the banner reports availability without any --rebuild.
+        monkeypatch.setenv("PDCP_API_KEY", "test-key")
+        monkeypatch.setattr(reg, "which_tool", lambda t: "/usr/bin/fake")
+        repo = Path(os.environ["RTW_HOME"])
+        repo.mkdir(parents=True, exist_ok=True)
+        (repo / "reconftw.sh").write_text("#!/bin/bash\nexit 0\n")
+        (repo / "reconftw.sh").chmod(0o755)
+        reg.main(["--banner"])
+        out = capsys.readouterr().out
+        row = next(line for line in out.splitlines()
+                   if line.strip().startswith("CAP_ASN_ENUM"))
+        assert "RTW_AVAILABLE" in row
+        assert "RTW_MISSING_DEPS" not in row
 
-class TestSourceOnlySubshell:
-    def test_source_script_never_enables_set_u(self):
-        """Live-run fix: reconFTW's Bash modules read uninitialized guard
-        variables (lib/common.sh: _COMMON_SH_LOADED) — `set -u` killed the
-        source-only subshell with rc=127 before the delegated function ran."""
-        text = adp.build_source_script(
-            adp.CAPABILITIES["CAP_DNS_PERMUT"], TARGET,
-            Path("/tmp/rtw-work"), Path("/tmp/rtw-work/rtw_override.cfg"))
-        assert text.startswith("set -eo pipefail")
-        assert "set -u" not in text
-        assert "-euo" not in text
 
-    def test_source_script_exports_scriptpath_before_source(self):
-        """Live-run fix: SCRIPTPATH pins reconFTW's lib/ + modules/ to
-        $RTW_HOME instead of a stale /opt/reconftw on the host."""
-        text = adp.build_source_script(
-            adp.CAPABILITIES["CAP_CDN_ISOLATE"], TARGET,
-            Path("/tmp/rtw-work"), Path("/tmp/rtw-work/rtw_override.cfg"))
-        expected = f"export SCRIPTPATH={shlex.quote(str(adp.rtw_home()))}"
-        assert expected in text
-        assert text.index("export SCRIPTPATH=") < text.index("source ")
+# ── CLI-mode delegation (Step 1B fix 1: no more --source-only subshells) ──────
+
+class TestCliModeDelegation:
+    def test_all_seven_capabilities_use_cli_mode(self):
+        """Step 1B fix 1: ALL 7 capabilities invoke reconFTW through the CLI
+        interface — the brittle `--source-only` subshells (which silently
+        no-op'd for sub_permut/cdnprovider/jschecks) are gone entirely."""
+        for cap_id, spec in reg.CAPABILITIES.items():
+            assert spec.rtw_mode == "cli", f"{cap_id} must delegate via CLI mode"
+        assert not hasattr(adp, "build_source_script")
+        assert not hasattr(adp, "build_source_command")
+
+    def test_cli_invocation_shape_with_no_banner(self, tmp_path):
+        """`bash <RTW_HOME>/reconftw.sh -d <target> -c <fn> -f <cfg>
+        -o <workdir> --no-banner` — the exact single-function interface,
+        always a subprocess, never sourced into our process."""
+        spec = reg.CAPABILITIES["CAP_DNS_PERMUT"]
+        workdir = tmp_path / "wd"
+        cfg = adp.write_override_cfg(workdir, spec)
+        argv = adp.build_cli_command(spec, TARGET, workdir, cfg)
+        assert argv[:2] == ["bash", str(adp.rtw_script())]
+        assert argv[-1] == "--no-banner"
+        for flag, val in (("-d", TARGET), ("-c", "sub_permut"),
+                          ("-f", str(cfg)), ("-o", str(workdir))):
+            i = argv.index(flag)
+            assert argv[i + 1] == val
+        assert "source" not in " ".join(argv)
+
+    def test_override_cfg_enables_requested_function_flags(self, tmp_path):
+        """The ephemeral cfg explicitly enables the requested function's gate
+        flag(s) while VULNS_GENERAL / CDN_BYPASS / NOTIFICATION stay
+        hard-locked to false."""
+        cfg = adp.write_override_cfg(tmp_path / "wd1",
+                                     reg.CAPABILITIES["CAP_DNS_PERMUT"])
+        text = cfg.read_text()
+        assert "SUBPERMUTE=true" in text
+        assert "Requested function: sub_permut" in text
+        assert "VULNS_GENERAL=false" in text
+        assert "CDN_BYPASS=false" in text
+        assert "NOTIFICATION=false" in text
+        assert "TLSX_THREADS=25" in text  # reconFTW default is 1000 — capped
+
+        cfg2 = adp.write_override_cfg(tmp_path / "wd2",
+                                      reg.CAPABILITIES["CAP_TLS_PIVOTS"])
+        text2 = cfg2.read_text()
+        assert "TLSX_PORTS=true" in text2 and "TLS_IP_PIVOTS=true" in text2
+        assert "Requested function: tls_ip_pivots" in text2
 
     def test_failed_function_publishes_no_findings(self, full_state, tmp_path):
-        """Live-run fix: rc != 0 → FAILED. The pre-seeded inputs (e.g.
-        subdomains/subdomains.txt) must NOT be published or counted:
-        findings_count == 0 and published == []."""
+        """rc != 0 → FAILED: findings_count == 0, net_new_count == 0 and
+        published == [] — the pre-seeded inputs are never counted or copied."""
         repo = tmp_path / "rtw"          # matches isolated_homes' RTW_HOME
         repo.mkdir(exist_ok=True)
         script = repo / "reconftw.sh"
         script.write_text(
             "#!/bin/bash\n"
-            "# stub: source-only defines the delegated function; it then fails\n"
-            'if [[ "${1:-}" == "--source-only" ]]; then\n'
-            "    sub_permut() {\n"
-            '        echo "candidate.goodscope.example" > "$PWD/subdomains/rtw_out.txt"\n'
-            "        return 3\n"
-            "    }\n"
-            "    return 0 2>/dev/null || exit 0\n"
-            "fi\n"
-            "exit 0\n"
+            "# stub: CLI single-function mode — emits one line, then fails\n"
+            'out=""\n'
+            'while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2";; esac; shift; done\n'
+            'mkdir -p "$out/subdomains"\n'
+            'echo "candidate.goodscope.example" > "$out/subdomains/rtw_out.txt"\n'
+            "exit 3\n"
         )
         script.chmod(0o755)
 
@@ -239,9 +291,133 @@ class TestSourceOnlySubshell:
         entry = result["entry"]
         assert entry["returncode"] == 3
         assert entry["findings_count"] == 0
+        assert entry["net_new_count"] == 0
         assert entry["published"] == []
         # and nothing reached ABH's recon dir either
         assert not (recon_dir / "rtw" / "sub_permut").exists()
+
+
+# ── honest accounting (Step 1B fixes 2-4): seed diffing, skips, health table ──
+
+class TestHonestAccounting:
+    STUB_HEAD = (
+        "#!/bin/bash\n"
+        "# stub: CLI single-function mode\n"
+        'out=""\n'
+        'while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2";; esac; shift; done\n'
+    )
+
+    def _seed_recon(self, tmp_path):
+        """recon dir with 2 seeded subdomains + 1 seeded live URL."""
+        recon_dir = tmp_path / "recon" / "t.goodscope.example"
+        (recon_dir / "subdomains").mkdir(parents=True)
+        (recon_dir / "live").mkdir()
+        (recon_dir / "subdomains" / "all.txt").write_text(
+            "seed1.goodscope.example\nseed2.goodscope.example\n")
+        (recon_dir / "live" / "urls.txt").write_text(
+            "https://seed1.goodscope.example\n")
+        return recon_dir
+
+    def _stub(self, tmp_path, body):
+        repo = tmp_path / "rtw"      # matches isolated_homes' RTW_HOME
+        repo.mkdir(exist_ok=True)
+        script = repo / "reconftw.sh"
+        script.write_text(self.STUB_HEAD + body)
+        script.chmod(0o755)
+
+    def test_net_new_count_excludes_seeded_lines(self, full_state, tmp_path):
+        """Live-run bug fixed: the stub echoes both seeded lines back plus one
+        new host — findings_count / net_new_count must be 1 (net-new only),
+        NOT 3, and published files carry the net-new line only."""
+        self._stub(tmp_path,
+                   'mkdir -p "$out/subdomains"\n'
+                   'printf "seed1.goodscope.example\\nseed2.goodscope.example\\n'
+                   'new.goodscope.example\\n" > "$out/subdomains/rtw_out.txt"\n'
+                   "exit 0\n")
+        recon_dir = self._seed_recon(tmp_path)
+        result = adp.run_capability("CAP_DNS_PERMUT", TARGET, recon_dir=recon_dir,
+                                    scope_domains=SCOPE, force=True)
+        entry = result["entry"]
+        assert result["status"] == "COMPLETED_WITH_FINDINGS"
+        assert entry["net_new_count"] == 1
+        assert entry["findings_count"] == 1
+        assert entry["seed_lines"] == 2  # CAP_DNS_PERMUT seeds subdomains/all.txt only
+        published_texts = [Path(p).read_text() for p in entry["published"]]
+        assert published_texts, "expected at least one published output"
+        assert all("seed1" not in t and "seed2" not in t
+                   for t in published_texts)
+        assert any("new.goodscope.example" in t for t in published_texts)
+
+    def test_seeded_only_output_is_completed_empty(self, full_state, tmp_path):
+        """rc == 0 and net_new_count == 0 (the function only echoed the seeds
+        back) → COMPLETED_EMPTY with findings_count 0 — never
+        COMPLETED_WITH_FINDINGS. This is exactly the rhodawkai.com 0.1s
+        no-op that used to report findings_count: 2."""
+        self._stub(tmp_path,
+                   'mkdir -p "$out/subdomains"\n'
+                   'printf "seed1.goodscope.example\\nseed2.goodscope.example\\n" '
+                   '> "$out/subdomains/rtw_out.txt"\n'
+                   "exit 0\n")
+        recon_dir = self._seed_recon(tmp_path)
+        result = adp.run_capability("CAP_DNS_PERMUT", TARGET, recon_dir=recon_dir,
+                                    scope_domains=SCOPE, force=True)
+        assert result["status"] == "COMPLETED_EMPTY"
+        entry = result["entry"]
+        assert entry["net_new_count"] == 0
+        assert entry["findings_count"] == 0
+
+    def test_silent_skip_detected_from_output(self, full_state, tmp_path):
+        """rc == 0 but the function printed a reconFTW skip marker →
+        SKIPPED_SILENT with the exact extracted reason."""
+        self._stub(tmp_path,
+                   'echo "SKIP: sub_permut — reason: config flag disabled"\n'
+                   "exit 0\n")
+        recon_dir = self._seed_recon(tmp_path)
+        result = adp.run_capability("CAP_DNS_PERMUT", TARGET, recon_dir=recon_dir,
+                                    scope_domains=SCOPE, force=True)
+        assert result["status"] == "SKIPPED_SILENT"
+        assert result["entry"]["net_new_count"] == 0
+        assert "skip marker" in result["reason"]
+        assert result["entry"]["reason"].startswith("skip marker")
+
+    def test_skip_marker_with_net_new_output_is_degraded(self, full_state, tmp_path):
+        """Skip markers in the output but net-new lines still landed →
+        DEGRADED (partial success is reported honestly)."""
+        self._stub(tmp_path,
+                   'echo "SKIP: legacy path unavailable"\n'
+                   'mkdir -p "$out/subdomains"\n'
+                   'echo "bonus.goodscope.example" > "$out/subdomains/rtw_out.txt"\n'
+                   "exit 0\n")
+        recon_dir = self._seed_recon(tmp_path)
+        result = adp.run_capability("CAP_DNS_PERMUT", TARGET, recon_dir=recon_dir,
+                                    scope_domains=SCOPE, force=True)
+        assert result["status"] == "DEGRADED"
+        assert result["entry"]["net_new_count"] == 1
+
+    def test_format_health_table(self):
+        """Step 1B fix 4: Capability | Function | Status | Duration | Net-New |
+        Reason — one row per capability, latest entry wins."""
+        manifest = {"entries": [
+            {"capability_id": "CAP_CDN_ISOLATE", "rtw_function": "cdnprovider",
+             "status": "COMPLETED_EMPTY", "duration_secs": 0.1,
+             "net_new_count": 0, "reason": "function completed, no net-new output lines"},
+            {"capability_id": "CAP_ASN_ENUM", "rtw_function": "sub_asn",
+             "status": "SKIPPED_SILENT", "duration_secs": 0.1,
+             "net_new_count": 0, "reason": "skip marker 'skip' in reconftw output"},
+            {"capability_id": "CAP_ASN_ENUM", "rtw_function": "sub_asn",
+             "status": "COMPLETED_WITH_FINDINGS", "duration_secs": 42.0,
+             "net_new_count": 7, "reason": "7 net-new finding line(s) collected"},
+        ]}
+        table = adp.format_health_table(manifest)
+        header = table.splitlines()[0]
+        for col in ("Capability", "Function", "Status", "Duration",
+                    "Net-New", "Reason"):
+            assert col in header
+        assert "CAP_ASN_ENUM" in table and "CAP_CDN_ISOLATE" in table
+        # Latest entry per capability wins.
+        assert "COMPLETED_WITH_FINDINGS" in table
+        assert "SKIPPED_SILENT" not in table
+        assert "42.0" in table
 
 
 # ── rtw_adapter: acceptance criteria ──────────────────────────────────────────
@@ -469,15 +645,17 @@ class TestManifestShape:
         # Never sourced into our process — always a subprocess of bash.
         assert "source" not in " ".join(argv)
 
-    def test_source_only_script_shape(self, tmp_path):
+    def test_cli_command_shape_jsmaps(self, tmp_path):
+        """Step 1B: CAP_JS_SOURCEMAPS (previously source-only) delegates
+        through the same CLI single-function interface."""
         spec = reg.CAPABILITIES["CAP_JS_SOURCEMAPS"]
         workdir = tmp_path / "wd"
-        cfg = adp.write_override_cfg(workdir)
-        script = adp.build_source_script(spec, TARGET, workdir, cfg)
-        assert "--source-only" in script
-        assert script.strip().splitlines()[-1] == spec.rtw_function
-        assert f"cd {workdir}" in script
-        assert "VULNS_GENERAL=false" in script
+        cfg = adp.write_override_cfg(workdir, spec)
+        argv = adp.build_cli_command(spec, TARGET, workdir, cfg)
+        i = argv.index("-c")
+        assert argv[i + 1] == "jschecks"
+        assert argv[-1] == "--no-banner"
+        assert "source" not in " ".join(argv)
 
     def test_input_hash_changes_with_seeds(self, full_state, tmp_path):
         recon_dir = tmp_path / "recon-hash" / "t.goodscope.example"

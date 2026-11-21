@@ -352,6 +352,13 @@ install_standalone() {
 
     if [ -L "$target" ] && [ "$(readlink "$target")" = "$engine" ]; then
         echo "[+] $action: $target -> $engine"
+        # Step 1A: the same engine is also exposed as `rhodawk` (brand alias).
+        ${install_cmd[@]+"${install_cmd[@]}"} ln -sfn "$engine" "$bin_dir/rhodawk"
+        if [ -L "$bin_dir/rhodawk" ] || [ -e "$bin_dir/rhodawk" ]; then
+            echo "[+] $action: $bin_dir/rhodawk -> $engine"
+        else
+            echo "[!] Could not install $bin_dir/rhodawk (bughunter still works)" >&2
+        fi
     else
         echo "[!] Could not install or update $target" >&2
         echo "    Try: sudo ./install.sh --agent standalone" >&2

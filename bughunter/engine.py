@@ -165,9 +165,20 @@ def _print_quick_help():
     """).strip())
 
 
+_KNOWN_COMMANDS = (set().union(*COMMAND_ALIASES.values()) | set(COMMAND_ALIASES)
+                   | {"mcp"})
+
+
 def _normalize_cli_argv(argv: list[str]) -> list[str]:
     if not argv:
         return argv
+    # Step 1A shorthand: `bughunter <target> -recon` / `--recon` is exactly
+    # `bughunter recon <target>`. All later flags forward identically because
+    # the rewritten argv flows through the same parser.
+    if (len(argv) >= 2 and not argv[0].startswith("-")
+            and argv[0] not in _KNOWN_COMMANDS
+            and argv[1] in ("-recon", "--recon")):
+        argv = ["recon", argv[0], *argv[2:]]
     if argv[0] in {"help", "-help"}:
         return ["--help", *argv[1:]]
     return ["--help" if item == "-help" else item for item in argv]
@@ -472,8 +483,11 @@ def cmd_setup(args):
 
         save_config(cfg)
         ok(f"Config saved to {CONFIG}")
+        # max_tokens >= 256: reasoning models (e.g. NVIDIA NIM nemotron) spend
+        # budget on reasoning_content before emitting final content — a tiny
+        # cap (10) makes the connectivity ping return an empty reply.
         reply = client.chat(selected_model, "You are a helpful assistant.",
-                            "Reply with exactly: READY", max_tokens=10)
+                            "Reply with exactly: READY", max_tokens=256)
         ok(f"Model responded: {reply.strip()}" if reply else "Connected (no reply — pull a model if using Ollama)")
     else:
         if not requested_model:
@@ -716,9 +730,10 @@ def cmd_recon(args):
     info("Running AI surface analysis...")
     brain = _get_brain()
     result = brain.analyze_recon(str(recon_dir) if recon_dir.exists() else target)
-    if result:
-        print(f"\n{result}")
-    else:
+    # Step 1C: brain._stream already prints the analysis live — printing the
+    # return value here duplicated the entire report (once before the
+    # "[+] Saved: .../01_recon_analysis.md" line, once right after). One print.
+    if not result:
         warn("AI analysis returned no output — check provider with: ./engine.py providers")
 
 
@@ -990,7 +1005,7 @@ def _print_banner():
         print(f"{color}{line}{NC}")
     print()
     print(f"  {G3}by {W}RhodawkAI{NC}  {G3}·{NC}  {G2}rhodawkai.com{NC}")
-    print(f"  {G3}github.com/{G2}Rhodawk-AI{G3}/Agentic-Bug-Hunter-RhodawkaiEdition{NC}")
+    print(f"  {G3}github.com/{G2}MogasalaHemagiri{G3}/Agentic-Bug-Hunter-RhodawkaiEdition{NC}")
     print(f"  {G3}free · open · no subscription required{NC}")
     print()
 
@@ -1050,11 +1065,21 @@ def main():
 
     p_recon = sub.add_parser("recon", aliases=["r"], help="Recon + AI surface analysis")
     p_recon.add_argument("target", help="Target domain or IP")
+    # Step 1A: --provider/--model accepted after the subcommand too, so the
+    # shorthand `bughunter <target> -recon --provider X` forwards identically.
+    p_recon.add_argument("--provider", dest="cmd_provider",
+                         help="Force provider for this invocation (global -p/--provider)")
+    p_recon.add_argument("--model", dest="cmd_model",
+                         help="Force model for this invocation (global -m/--model)")
     _add_scope_args(p_recon)
 
     p_hunt = sub.add_parser("hunt", aliases=["h"], help="Full hunt pipeline")
     p_hunt.add_argument("target", help="Target domain or IP")
     p_hunt.add_argument("--quick", action="store_true", help="Quick mode (fewer checks)")
+    p_hunt.add_argument("--provider", dest="cmd_provider",
+                        help="Force provider for this invocation (global -p/--provider)")
+    p_hunt.add_argument("--model", dest="cmd_model",
+                        help="Force model for this invocation (global -m/--model)")
     _add_scope_args(p_hunt)
 
     p_val = sub.add_parser("validate", aliases=["v"], help="7-Question Gate on a finding")
@@ -1081,11 +1106,15 @@ def main():
 
     args = parser.parse_args(argv)
 
-    # Apply provider override
-    if getattr(args, "provider", None):
-        os.environ["BRAIN_PROVIDER"] = args.provider
-    if getattr(args, "model", None):
-        os.environ["BRAIN_MODEL"] = args.model
+    # Apply provider/model override — the global flags and the recon/hunt
+    # subcommand-level duplicates (Step 1A) forward identically.
+    provider_override = (getattr(args, "provider", None)
+                         or getattr(args, "cmd_provider", None))
+    model_override = getattr(args, "model", None) or getattr(args, "cmd_model", None)
+    if provider_override:
+        os.environ["BRAIN_PROVIDER"] = provider_override
+    if model_override:
+        os.environ["BRAIN_MODEL"] = model_override
 
     # Load saved API keys into environment before any LLM call
     cfg = load_config()

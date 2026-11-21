@@ -38,7 +38,7 @@ API keys (env vars):
   REQUESTY_API_KEY    - Requesty (multi-model gateway, anthropic/claude-sonnet-4-6, etc.)
   REQUESTY_BASE_URL   - Requesty base URL (default: https://router.requesty.ai/v1,
                         EU: https://router.eu.requesty.ai/v1)
-  NVIDIA_API_KEY      — NVIDIA NIM (meta/llama-3.3-70b-instruct,
+  NVIDIA_API_KEY      — NVIDIA NIM (nvidia/nemotron-3-ultra-550b-a55b,
                         qwen/qwen2.5-coder-32b-instruct, etc.)
   NVIDIA_NIM_BASE_URL - NVIDIA NIM base URL (default:
                         https://integrate.api.nvidia.com/v1; point it at a
@@ -209,7 +209,7 @@ class LLMClient:
         "antigravity": "gemini-3.8-flash-high",
         "kimi":        "moonshot-v1-128k",
         "mistral":     "mistral-large-latest",
-        "nvidia":      "meta/llama-3.3-70b-instruct",
+        "nvidia":      "nvidia/nemotron-3-ultra-550b-a55b",
         "together":    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "cerebras":    "llama3.3-70b",
         "perplexity":  "sonar-pro",
@@ -748,7 +748,14 @@ class LLMClient:
                 f"to a supported one."
             )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"].strip()
+        msg = r.json()["choices"][0]["message"] or {}
+        # Reasoning models (e.g. NVIDIA NIM nemotron) can return
+        # {"content": null, "reasoning_content": "..."} when max_tokens is
+        # small or while still reasoning. Fall back to reasoning_content so a
+        # null content never raises AttributeError: 'NoneType' object has no
+        # attribute 'strip'.
+        text = (msg.get("content") or msg.get("reasoning_content") or "").strip()
+        return text
 
     def list_models(self) -> list[str]:
         """List available models for the current provider."""
@@ -808,8 +815,10 @@ class LLMClient:
         elif self.provider == "nvidia":
             # Hosted NIM catalog highlights (https://build.nvidia.com). A
             # self-hosted NIM endpoint exposes exactly its own loaded model.
+            # meta/llama-3.3-70b-instruct returned HTTP 410 Gone on the hosted
+            # endpoint — retired ids stay out of the catalog.
             return [
-                "meta/llama-3.3-70b-instruct",
+                "nvidia/nemotron-3-ultra-550b-a55b",
                 "qwen/qwen2.5-coder-32b-instruct",
                 "nvidia/llama-3.1-nemotron-70b-instruct",
                 "deepseek-ai/deepseek-r1",
@@ -1174,7 +1183,7 @@ Keep it under 80 words total."""
                     },
                 )
                 for chunk in stream:
-                    token = chunk["message"]["content"]
+                    token = (chunk.get("message") or {}).get("content") or ""
                     print(token, end="", flush=True)
                     full_text += token
             else:
@@ -1569,10 +1578,52 @@ Keep it under 80 words total."""
             session_session_path = repo_root / "targets" / target / "sessions" / session_id / "autonomous_session.json"
         autonomous_session = self._read_file_sample(str(session_session_path), 2500)
 
+        # Step 2D: token-smart canonical truth. When recon_fusion.py has
+        # produced recon_truth.json (+ delta.json), the prompt reads the
+        # deduplicated, provenance-tagged truth — cluster representatives
+        # only, tool_health, js endpoints, ports — instead of raw dumps.
+        truth_payload = ""
+        delta_payload = ""
+        truth_path = recon_path / "recon_truth.json"
+        if truth_path.exists():
+            try:
+                truth = json.loads(truth_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                truth = None
+            if isinstance(truth, dict):
+                reps = [h for h in truth.get("hosts", []) if h.get("is_cluster_rep")]
+                compact = {
+                    "counts": truth.get("counts", {}),
+                    "tool_health": truth.get("tool_health", []),
+                    "cluster_representative_hosts": reps[:40],
+                    "js_endpoints": truth.get("js_endpoints", [])[:80],
+                    "open_ports": truth.get("ports", [])[:80],
+                    "notable_urls": [u.get("url") for u in truth.get("urls", [])[:60]],
+                }
+                truth_payload = json.dumps(compact, indent=2, default=str)
+                try:
+                    delta = json.loads(
+                        (recon_path / "delta.json").read_text(encoding="utf-8"))
+                    if isinstance(delta, dict) and delta.get("has_previous_run"):
+                        delta_payload = json.dumps(
+                            {k: (v[:40] if isinstance(v, list) else v)
+                             for k, v in delta.items()}, indent=2, default=str)
+                except (OSError, ValueError):
+                    delta_payload = ""
+                # The raw httpx dump is redundant when truth exists (its
+                # content is summarized by the cluster representatives above).
+                httpx_sample = ""
+
         prompt = f"""I just completed recon on target: {target}
 
 ## Recon Numbers
 {json.dumps(summary, indent=2)}
+
+## Canonical truth (recon_truth.json — dedup + provenance + SimHash clusters)
+{delimit_untrusted("canonical recon truth", truth_payload) if truth_payload else "(not available — falling back to raw artifacts)"}
+
+## Run-over-run delta (delta.json)
+{delimit_untrusted("recon delta vs previous run", delta_payload) if delta_payload else "(first run for this target)"}
 
 ## CVE-Priority (tech detection + CVSS scoring)
 {delimit_untrusted("CVE-priority JSON", priority_json) if priority_json else "(not available)"}
@@ -1636,8 +1687,26 @@ appear verbatim in the data sections above. Do NOT invent, guess, or fabricate
 endpoints, URLs, APIs, credentials, or findings. If the data shows "(none)" or
 "(empty)", state that explicitly and do not substitute hypothetical examples."""
 
+        # Step 2D: the payload passes through ABH's redaction layer before it
+        # reaches the LLM, and the saved brief is redacted too.
+        try:
+            from memory.redaction import redact_text
+        except ImportError:
+            redact_text = None
+        if redact_text is not None:
+            prompt = redact_text(prompt)
+
         result = self._stream(prompt, f"Recon Analysis → {target}", MAX_RESP)
         self._save_analysis(recon_dir, "01_recon_analysis.md", result)
+        # Step 2D: also write the compact brief next to recon_truth.json.
+        try:
+            brief_path = Path(recon_dir) / "recon_brief.md"
+            brief_path.write_text(
+                f"Generated: {datetime.now()}  Model: {self.model}\n\n"
+                f"{redact_text(result) if redact_text else result}")
+            print(f"{GREEN}[+] Saved: {brief_path}{NC}")
+        except OSError:
+            pass
         return result
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -2486,7 +2555,7 @@ NEXT ACTION: <one concrete action>
                 },
             )
             for chunk in stream:
-                token = chunk["message"]["content"]
+                token = (chunk.get("message") or {}).get("content") or ""
                 print(token, end="", flush=True)
                 full_text += token
         except Exception as exc:
