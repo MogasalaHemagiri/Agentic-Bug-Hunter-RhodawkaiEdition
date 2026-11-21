@@ -119,9 +119,19 @@ def run_recon(target: str, *, timeout: int = 600, scope_checker=None) -> dict[st
     # Pin the output dir to the contained path so recon_engine.sh cannot be
     # steered outside REPO/recon by a crafted target.
     env["RECON_OUT_DIR"] = str(recon_dir)
+    # Forward the policy engine's ScopeChecker patterns so the reconFTW
+    # gap-fill (recon_engine.sh Phases 1.5/5.5) runs under the same fail-closed
+    # scope as every other MCP tool. No checker → delegation fails closed
+    # inside the adapter (native pipeline unaffected).
+    cmd = ["bash", str(script), target]
+    if scope_checker is not None:
+        for pattern in getattr(scope_checker, "domains", None) or []:
+            cmd += ["--scope-domain", str(pattern)]
+        for pattern in getattr(scope_checker, "excluded_domains", None) or []:
+            cmd += ["--scope-exclude", str(pattern)]
     try:
         proc = subprocess.run(
-            ["bash", str(script), target],
+            cmd,
             cwd=str(REPO),
             capture_output=True,
             text=True,
@@ -155,6 +165,38 @@ def run_recon(target: str, *, timeout: int = 600, scope_checker=None) -> dict[st
         except Exception as exc:  # noqa: BLE001
             summary["lead_ingest_error"] = str(exc)
     return summary
+
+
+def run_rtw_capability(capability_id: str, target: str, *,
+                       scope_checker=None, force: bool = False,
+                       timeout: int | None = None) -> dict[str, Any]:
+    """Delegate ONE recon capability gap to reconFTW via tools/rtw_adapter.py.
+
+    This is the MCP runtime's route into the same deterministic six-step flow
+    every other runtime uses (engine Phase 1.5/5.5, ReAct agent, harness):
+    identical manifest schema, identical fail-closed scope gate, identical
+    audit trail. The policy engine's ScopeChecker is passed through so the
+    adapter's pre-call gate and post-call output filter use the MCP session's
+    program scope. No checker → the adapter fails closed on its own.
+    """
+    _sys_path()
+    try:
+        from tools import rtw_adapter
+    except ImportError as exc:
+        return {"status": "failed", "error": "UNAVAILABLE",
+                "reason": f"rtw_adapter import failed: {exc}"}
+    try:
+        recon_dir = _safe_under(REPO / "recon", target)
+    except UnsafeTargetError as exc:
+        return {"status": "failed", "error": "INVALID_TARGET", "reason": str(exc)}
+    result = rtw_adapter.run_capability(
+        capability_id, target,
+        recon_dir=recon_dir if recon_dir else None,
+        checker=scope_checker,
+        force=force,
+        timeout_secs=timeout,
+    )
+    return result
 
 
 def read_recon_file(target: str, relative: str, limit: int = 50) -> dict[str, Any]:

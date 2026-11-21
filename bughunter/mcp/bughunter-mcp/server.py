@@ -157,6 +157,34 @@ def bughunter_recon(
     return redact_obj(adapters.run_recon(target, scope_checker=POLICY._checker))
 
 
+@mcp.tool(title="reconFTW capability", annotations=_ann(open_world=True))
+def bughunter_run_rtw_capability(
+    capability_id: str,
+    target: str,
+    scope_domains: list[str] | None = None,
+    approve: bool = False,
+) -> dict[str, Any]:
+    """Delegate ONE recon capability gap to reconFTW deterministically.
+
+    capability_id must be one of the 7 typed IDs in ~/.bughunter/capabilities.json
+    (CAP_ASN_ENUM, CAP_DNS_PERMUT, CAP_CDN_ISOLATE, CAP_JS_SOURCEMAPS,
+    CAP_VHOSTS, CAP_TLS_PIVOTS, CAP_FAVICON). The routing decision is
+    deterministic code (capability_registry.py + tools/rtw_adapter.py), never
+    a model judgment call: availability comes from capabilities.json, scope
+    is fail-closed, every output file is scope-filtered post-call, and results
+    land in the shared rtw_manifest.json schema the CLI/agent/harness
+    runtimes also write. Requires scope + approve=true.
+    """
+    args = {"target": target, "scope_domains": scope_domains or [target], "approve": approve}
+    denied = _gate("bughunter_run_rtw_capability", args)
+    if denied:
+        return denied
+    POLICY.set_scope(scope_domains or [target])
+    return redact_obj(
+        adapters.run_rtw_capability(capability_id, target,
+                                    scope_checker=POLICY._checker))
+
+
 @mcp.tool(title="Attack surface", annotations=_ann(read_only=True))
 def bughunter_attack_surface(target: str) -> dict[str, Any]:
     """Summarize existing recon artifacts for a target (passive, local files only)."""

@@ -113,6 +113,43 @@ If the `burp` MCP server is available:
 
 If Burp MCP is NOT available, skip this section entirely — all recon works without it.
 
+## reconFTW Gap-Fill (optional — only if RTW_HOME is set)
+
+If `RTW_HOME` is set and `~/.bughunter/capabilities.json` marks capabilities
+`RTW_AVAILABLE`, close the 7 recon capability gaps by delegating to reconFTW.
+The routing decision is deterministic — read capabilities.json and follow the
+rule; never decide from vibes.
+
+Rule (worded identically across every prompt layer): **If recon_summary flags a capability gap and capabilities.json marks it RTW_AVAILABLE, call run_rtw_capability before proceeding.**
+
+Capability map (typed IDs → reconFTW function):
+
+| capability_id | reconFTW fn | Gap closed |
+|---|---|---|
+| CAP_ASN_ENUM | sub_asn | ASN/CIDR enumeration |
+| CAP_DNS_PERMUT | sub_permut | DNS brute/permutation |
+| CAP_CDN_ISOLATE | cdnprovider | CDN/origin isolation (beyond Cloudflare) |
+| CAP_JS_SOURCEMAPS | jschecks | JS source-map/AST secret extraction |
+| CAP_VHOSTS | virtualhosts | Virtual-host discovery |
+| CAP_TLS_PIVOTS | tls_ip_pivots | TLS-certificate IP pivots |
+| CAP_FAVICON | favirecon_tech | Favicon fingerprinting |
+
+To invoke by hand (scope is fail-closed — patterns required):
+
+```bash
+python3 bughunter/tools/rtw_adapter.py phase 1.5 --target "$TARGET_DOMAIN" \
+    --recon-dir "recon/$TARGET_DOMAIN" --scope-domain "*.target.com"
+python3 bughunter/tools/rtw_adapter.py phase 5.5 --target "$TARGET_DOMAIN" \
+    --recon-dir "recon/$TARGET_DOMAIN" --scope-domain "*.target.com"
+```
+
+Results land in `recon/$TARGET_DOMAIN/rtw/<function>/`, are scope-filtered, and
+are traced in `~/.bughunter/recon/<host>/rtw_manifest.json` (same schema across
+all four runtimes). If capabilities.json says `RTW_MISSING_DEPS`, report the gap
+as "not available in this install" and move on — never probe the target with
+unavailable tools. If RTW_HOME is NOT set, skip this section entirely — the
+native pipeline is complete without it.
+
 ## 5-Minute Kill Check
 
 After running, if:

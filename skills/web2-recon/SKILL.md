@@ -9,6 +9,45 @@ Full asset discovery from nothing to a prioritized URL list ready for hunting.
 
 ---
 
+## reconFTW GAP-FILL (RhodawkAI Edition)
+
+The native pipeline above has 7 known capability gaps. Where reconFTW is
+installed (`RTW_HOME` set), close them by delegation — the routing decision is
+deterministic code, never a model judgment call.
+
+Rule (worded identically across every prompt layer): **If recon_summary flags a capability gap and capabilities.json marks it RTW_AVAILABLE, call run_rtw_capability before proceeding.**
+
+Check `~/.bughunter/capabilities.json` first; the 7 typed IDs and their
+reconFTW functions:
+
+| capability_id | reconFTW fn | Gap closed |
+|---|---|---|
+| CAP_ASN_ENUM | sub_asn | ASN/CIDR enumeration |
+| CAP_DNS_PERMUT | sub_permut | DNS brute/permutation |
+| CAP_CDN_ISOLATE | cdnprovider | CDN/origin isolation (beyond Cloudflare) |
+| CAP_JS_SOURCEMAPS | jschecks | JS source-map/AST secret extraction |
+| CAP_VHOSTS | virtualhosts | Virtual-host discovery |
+| CAP_TLS_PIVOTS | tls_ip_pivots | TLS-certificate IP pivots |
+| CAP_FAVICON | favirecon_tech | Favicon fingerprinting |
+
+```bash
+# Check what's delegatable in this install:
+python3 bughunter/tools/capability_registry.py --json
+
+# Delegate one phase group (scope fail-closed; patterns required):
+python3 bughunter/tools/rtw_adapter.py phase 1.5 --target target.com \
+    --recon-dir recon/target.com --scope-domain "*.target.com"
+python3 bughunter/tools/rtw_adapter.py phase 5.5 --target target.com \
+    --recon-dir recon/target.com --scope-domain "*.target.com"
+```
+
+Nothing ABH owns at parity is ever delegated (passive subs, port scan, GraphQL,
+S3 buckets, auth-aware crawl), and `modules/vulns.sh` is entirely out of scope:
+ABH's verifier spine is the only thing allowed to promote a finding. With
+`RTW_HOME` unset, skip this section — the native pipeline is complete.
+
+---
+
 ## SETUP (one-time)
 
 ```bash

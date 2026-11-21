@@ -3,6 +3,50 @@
 </p>
 
 <p align="center">
+  <b>Agentic-Bug-Hunter — RhodawkAI Edition</b>
+  <br/>
+  A standalone fork of Agentic-Bug-Hunter with one addition: deterministic reconFTW
+  capability delegation for the recon phase. Standalone release — no external stack ties;
+  secrets stay entirely within this fork's own <code>config.json</code> / reconFTW's own
+  <code>secrets.cfg</code>.
+</p>
+
+## RhodawkAI Edition — what's different
+
+Wherever ABH's own recon pipeline hits a capability it doesn't have, it transparently
+delegates to reconFTW's equivalent function — in all four runtimes (CLI engine, ReAct
+agent, interactive harness, MCP server) — with zero confusion for whichever of ABH's 16+
+LLM providers is configured, because the routing decision is **deterministic code, not an
+LLM judgment call**. The LLM reads `~/.bughunter/capabilities.json` and follows an explicit
+rule worded identically across every prompt layer; `tools/rtw_adapter.py` decides what
+actually runs.
+
+| Capability | reconFTW function | Runs in |
+|---|---|---|
+| ASN/CIDR enum (`CAP_ASN_ENUM`) | `sub_asn` | Phase 1.5 (before httpx) |
+| DNS brute/permutation (`CAP_DNS_PERMUT`) | `sub_permut` | Phase 1.5 (before httpx) |
+| CDN/origin isolation (`CAP_CDN_ISOLATE`) | `cdnprovider` | Phase 1.5 (before httpx) |
+| JS source-map/AST secrets (`CAP_JS_SOURCEMAPS`) | `jschecks` | Phase 5.5 (before ffuf) |
+| Virtual-host discovery (`CAP_VHOSTS`) | `virtualhosts` | Phase 5.5 (before ffuf) |
+| TLS IP pivots (`CAP_TLS_PIVOTS`) | `tls_ip_pivots` | Phase 5.5 (before ffuf) |
+| Favicon fingerprint (`CAP_FAVICON`) | `favirecon_tech` | Phase 5.5 (before ffuf) |
+
+Guardrails: scope is fail-closed (`--scope-domain` required, or explicit
+`--no-scope-check` for local demo testing); every output file is scope-filtered post-call;
+`modules/vulns.sh` is never delegated — ABH's verifier spine remains the only thing allowed
+to promote a finding; nothing ABH owns at parity is ever routed to reconFTW. With
+`RTW_HOME` unset, everything behaves exactly as upstream ABH. Results are traced in
+`~/.bughunter/recon/<host>/rtw_manifest.json` with an identical schema across all four
+runtimes, deduplicated on a 7-day TTL.
+
+Setup: `./install.sh` clones reconFTW at a pinned commit into `RTW_HOME`
+(default `~/Tools/reconftw`) and builds `capabilities.json`; `bash install_tools.sh --rtw-deps`
+installs only the 7 capabilities' backing binaries via pinned go-install. See
+`docs/CAPABILITY-GAPS.md` and `CHANGELOG.md` for the full map.
+
+---
+
+<p align="center">
   <b>AI-powered bug bounty hunting — recon to report, in your terminal.</b>
   <br/>
   <a href="#what-is-this">What Is This</a>

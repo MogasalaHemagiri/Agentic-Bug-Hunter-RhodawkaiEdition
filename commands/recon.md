@@ -36,12 +36,45 @@ Output lands in `recon/<target>/` (or `recon/<file-basename>/` for list mode):
 ```
 recon/<target>/
 ├── subdomains/all.txt
+├── rtw/<function>/          (reconFTW gap-fill output, Phases 1.5 + 5.5)
 ├── live/urls.txt
 ├── urls/all.txt
 ├── candidates/{xss,ssrf,idor,sqli,redirect,lfi}.txt
 ├── api-endpoints.txt
 ├── nuclei/findings.txt
 └── cicd/summary.txt        (if CI/CD workflows detected)
+```
+
+## reconFTW Gap-Fill (RhodawkAI Edition, Phases 1.5 + 5.5)
+
+If `RTW_HOME` is set (reconFTW cloned and `capabilities.json` built), the engine
+runs two extra phases automatically and deterministically — never a model
+judgment call:
+
+- **Phase 1.5** (before httpx probing): `CAP_ASN_ENUM` (sub_asn), `CAP_DNS_PERMUT`
+  (sub_permut), `CAP_CDN_ISOLATE` (cdnprovider). Discovered subdomains are
+  scope-filtered and merged into `subdomains/all.txt`, so Phase 2 probes them
+  in the same run.
+- **Phase 5.5** (before directory fuzzing): `CAP_JS_SOURCEMAPS` (jschecks),
+  `CAP_VHOSTS` (virtualhosts), `CAP_TLS_PIVOTS` (tls_ip_pivots), `CAP_FAVICON`
+  (favirecon_tech). New JS endpoints/routes are merged into `urls/all.txt`.
+
+Rule (worded identically across every prompt layer): **If recon_summary flags a capability gap and capabilities.json marks it RTW_AVAILABLE, call run_rtw_capability before proceeding.**
+
+Scope is fail-closed: reconFTW delegation runs only when scope patterns are
+provided (`--scope-domain PATTERN`, repeatable, forwarded by `bughunter recon` /
+`bughunter hunt` / the ReAct agent automatically) or when `--no-scope-check` is
+passed explicitly (local demo testing only). Without either, the adapter blocks
+the delegation, logs the block to `hunt-memory/audit.jsonl`, and the native
+pipeline continues.
+
+To run a phase's group by hand:
+
+```bash
+python3 bughunter/tools/rtw_adapter.py phase 1.5 --target target.com \
+    --recon-dir recon/target.com --scope-domain "*.target.com"
+python3 bughunter/tools/rtw_adapter.py phase 5.5 --target target.com \
+    --recon-dir recon/target.com --scope-domain "*.target.com"
 ```
 
 ## Troubleshooting
