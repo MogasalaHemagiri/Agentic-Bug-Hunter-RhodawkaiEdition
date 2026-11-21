@@ -279,8 +279,8 @@ def test_nvidia_init_sets_default_api_base(brain_module, monkeypatch):
     assert client.available is True
     assert client._api_base == "https://integrate.api.nvidia.com/v1"
     assert "nvidia" in client.description.lower()
-    assert brain_module.LLMClient.DEFAULT_MODELS["nvidia"] == "meta/llama-3.3-70b-instruct"
-    assert "meta/llama-3.3-70b-instruct" in brain_module.LLMClient.list_models(client)
+    assert brain_module.LLMClient.DEFAULT_MODELS["nvidia"] == "nvidia/nemotron-3-ultra-550b-a55b"
+    assert "nvidia/nemotron-3-ultra-550b-a55b" in brain_module.LLMClient.list_models(client)
 
 
 def test_nvidia_base_url_override(brain_module, monkeypatch):

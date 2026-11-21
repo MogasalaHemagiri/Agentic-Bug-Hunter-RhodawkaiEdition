@@ -69,7 +69,7 @@ def test_nvidia_uses_openai_compat_chat_path(brain_module, monkeypatch):
 
 def test_nvidia_provider_registry_entries(brain_module):
     dm = brain_module.LLMClient.DEFAULT_MODELS
-    assert dm["nvidia"] == "meta/llama-3.3-70b-instruct"
+    assert dm["nvidia"] == "nvidia/nemotron-3-ultra-550b-a55b"
     assert brain_module.LLMClient.PROVIDER_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
     assert "nvidia" in brain_module.LLMClient.PROVIDER_PRIORITY
 
@@ -112,3 +112,71 @@ def test_engine_wires_nvidia_setup_and_providers():
     assert "NVIDIA NIM" in src                              # menu label
     assert '"nvidia", "nim", "nvidia-nim"' in src           # argparse choices
     assert "https://integrate.api.nvidia.com/v1" in src     # default shown
+    assert "max_tokens=256" in src                          # reasoning-room ping
+
+
+# ── Reasoning-model responses: content=None + reasoning_content ──────────────
+
+class _FakeResponse:
+    """Minimal OpenAI-compatible HTTP response for chat-path unit tests."""
+    status_code = 200
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    def __init__(self, payload):
+        self.calls = []
+        self._payload = payload
+
+    def post(self, url, **kwargs):
+        self.calls.append(url)
+        return _FakeResponse(self._payload)
+
+
+def _reasoning_client(brain_module, monkeypatch, payload):
+    client = _nim_client(brain_module, monkeypatch)
+    brain_module.LLMClient._init_provider(client, "nvidia")
+    client._http = _FakeSession(payload)
+    return client
+
+
+def test_reasoning_model_none_content_falls_back_to_reasoning_content(
+        brain_module, monkeypatch):
+    """Reasoning models on NVIDIA NIM (e.g. nvidia/nemotron-3-ultra-550b-a55b)
+    return {"content": null, "reasoning_content": "..."} when max_tokens is
+    small or while still reasoning. chat() must return the reasoning text
+    instead of raising AttributeError: 'NoneType' object has no attribute
+    'strip'."""
+    payload = {"choices": [{"message": {"content": None,
+                                        "reasoning_content": "OK"}}]}
+    client = _reasoning_client(brain_module, monkeypatch, payload)
+
+    reply = client.chat(None, "system", "user")
+
+    assert reply == "OK"
+    assert client._http.calls[0].endswith("/chat/completions")
+
+
+def test_reasoning_model_none_content_without_reasoning_returns_empty(
+        brain_module, monkeypatch):
+    """content=None and no reasoning_content yields "" — never a crash."""
+    payload = {"choices": [{"message": {"content": None}}]}
+    client = _reasoning_client(brain_module, monkeypatch, payload)
+    assert client.chat(None, "system", "user") == ""
+
+
+def test_reasoning_model_final_content_takes_precedence(
+        brain_module, monkeypatch):
+    """A real final content still wins over reasoning_content."""
+    payload = {"choices": [{"message": {"content": "READY",
+                                        "reasoning_content": "thinking..."}}]}
+    client = _reasoning_client(brain_module, monkeypatch, payload)
+    assert client.chat(None, "system", "user") == "READY"
