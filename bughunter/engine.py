@@ -615,6 +615,36 @@ def cmd_models(args):
             print("  Pull a model: ollama pull qwen2.5:14b")
 
 
+def _add_scope_args(parser) -> None:
+    """Scope flags for subcommands that invoke recon_engine.sh. Forwarded
+    verbatim to the script, whose reconFTW gap-fill adapter (Phases 1.5/5.5)
+    enforces them fail-closed: reconFTW delegation never runs without explicit
+    scope patterns or --no-scope-check."""
+    parser.add_argument("--scope-domain", action="append", default=[],
+                        help="In-scope pattern for reconFTW gap-fill (repeat or comma-separate). "
+                             "Without it, gap-fill delegation fails closed.")
+    parser.add_argument("--scope-exclude", action="append", default=[],
+                        help="Out-of-scope pattern for reconFTW gap-fill (repeat or comma-separate).")
+    parser.add_argument("--no-scope-check", action="store_true",
+                        help="Opt out of the gap-fill scope gate (local demo testing only).")
+
+
+def _scope_flag_args(args) -> list[str]:
+    """Build the recon_engine.sh scope-forwarding argv fragment."""
+    out: list[str] = []
+    if getattr(args, "no_scope_check", False):
+        out.append("--no-scope-check")
+        return out
+    for vals, flag in ((getattr(args, "scope_domain", []) or [], "--scope-domain"),
+                       (getattr(args, "scope_exclude", []) or [], "--scope-exclude")):
+        for v in vals:
+            for part in str(v).split(","):
+                part = part.strip()
+                if part:
+                    out += [flag, part]
+    return out
+
+
 def cmd_recon(args):
     """Run recon pipeline then AI surface analysis."""
     from tools.target_normalize import safe_target_dirname
@@ -636,7 +666,7 @@ def cmd_recon(args):
     script = TOOLS / "recon_engine.sh"
     if script.exists():
         info("Running recon pipeline...")
-        success, _ = _run_shell(["bash", str(script), target],
+        success, _ = _run_shell(["bash", str(script), target, *_scope_flag_args(args)],
                                 env={"RECON_OUT_DIR": str(recon_dir)})
         if not success:
             warn("Recon had issues — continuing with AI analysis")
@@ -669,7 +699,7 @@ def cmd_hunt(args):
     script = TOOLS / "recon_engine.sh"
     if script.exists():
         info("Phase 1: Recon...")
-        _run_shell(["bash", str(script), target],
+        _run_shell(["bash", str(script), target, *_scope_flag_args(args)],
                    env={"RECON_OUT_DIR": str(recon_dir)})
 
     # Run vuln scan
@@ -972,10 +1002,12 @@ def main():
 
     p_recon = sub.add_parser("recon", aliases=["r"], help="Recon + AI surface analysis")
     p_recon.add_argument("target", help="Target domain or IP")
+    _add_scope_args(p_recon)
 
     p_hunt = sub.add_parser("hunt", aliases=["h"], help="Full hunt pipeline")
     p_hunt.add_argument("target", help="Target domain or IP")
     p_hunt.add_argument("--quick", action="store_true", help="Quick mode (fewer checks)")
+    _add_scope_args(p_hunt)
 
     p_val = sub.add_parser("validate", aliases=["v"], help="7-Question Gate on a finding")
     p_val.add_argument("finding", nargs="?", default="", help="Finding description (or pipe via stdin)")

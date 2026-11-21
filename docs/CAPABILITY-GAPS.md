@@ -144,6 +144,35 @@ param discovery, 403 bypass, CVE sweep.
   [no coverage]
 - **No JS source-map extraction / deobfuscation** beyond secret-grepping. `linkfinder` is
   [registered-not-wired] for endpoint extraction from JS.
+- **No DNS brute/permutation** (gotator/puredns class). [no coverage]
+- **No virtual-host discovery** (VhostFinder/ffuf HOST-header fuzzing). [no coverage]
+- **No TLS-certificate IP pivots** (tlsx SAN extraction across resolved IPs). [no coverage]
+- **No general CDN/origin isolation** — Cloudflare only, via `cloudfail`. [partial coverage]
+
+## reconFTW Gap-Fill (RhodawkAI Edition — closed via deterministic delegation)
+
+All seven recon-phase gaps above are now closed by on-demand delegation to
+reconFTW's equivalent functions (`RTW_HOME` required; availability published to
+`~/.bughunter/capabilities.json` by `tools/capability_registry.py`; routing is
+deterministic code in `tools/rtw_adapter.py` — never an LLM judgment call, and
+the delegation is fail-closed on scope):
+
+| Gap | Closed by | reconFTW function |
+|---|---|---|
+| ASN/CIDR → IP-range expansion | `CAP_ASN_ENUM` (Phase 1.5) | `sub_asn` |
+| DNS brute/permutation | `CAP_DNS_PERMUT` (Phase 1.5) | `sub_permut` |
+| CDN/origin isolation (general) | `CAP_CDN_ISOLATE` (Phase 1.5) | `cdnprovider` |
+| JS source-map/AST secret extraction | `CAP_JS_SOURCEMAPS` (Phase 5.5) | `jschecks` |
+| Virtual-host discovery | `CAP_VHOSTS` (Phase 5.5) | `virtualhosts` |
+| TLS-certificate IP pivots | `CAP_TLS_PIVOTS` (Phase 5.5) | `tls_ip_pivots` |
+| Favicon fingerprinting | `CAP_FAVICON` (Phase 5.5) | `favirecon_tech` |
+
+Guardrails: scope-filtered inputs and outputs (`tools/scope_checker.py`, fail
+closed), vuln scanning (`modules/vulns.sh`) never delegated, and nothing ABH
+already owns at parity (passive subs, port scan, GraphQL, S3 buckets,
+auth-aware crawl) is ever routed to reconFTW. Note Shodan/Censys asset
+discovery remains open — reconFTW has no equivalent function, so it is not in
+the delegation map.
 
 ## Cross-cutting / Others
 

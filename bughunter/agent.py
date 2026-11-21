@@ -163,6 +163,42 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "run_rtw_capability",
+            "description": (
+                "Delegate ONE recon capability gap to reconFTW deterministically "
+                "(RhodawkAI Edition). capability_id must be one of the 7 typed IDs "
+                "in ~/.bughunter/capabilities.json: CAP_ASN_ENUM, CAP_DNS_PERMUT, "
+                "CAP_CDN_ISOLATE, CAP_JS_SOURCEMAPS, CAP_VHOSTS, CAP_TLS_PIVOTS, "
+                "CAP_FAVICON. The routing decision is deterministic code, not a "
+                "model judgment: read capabilities.json first, then delegate only "
+                "capabilities marked RTW_AVAILABLE. Scope is fail-closed; results "
+                "are scope-filtered and traced to rtw_manifest.json."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capability_id": {
+                        "type": "string",
+                        "enum": [
+                            "CAP_ASN_ENUM", "CAP_DNS_PERMUT", "CAP_CDN_ISOLATE",
+                            "CAP_JS_SOURCEMAPS", "CAP_VHOSTS", "CAP_TLS_PIVOTS",
+                            "CAP_FAVICON",
+                        ],
+                        "description": "Which capability gap to delegate.",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Re-run even if a fresh (7-day TTL) manifest entry exists.",
+                        "default": False,
+                    },
+                },
+                "required": ["capability_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_vuln_scan",
             "description": (
                 "Run the core vulnerability scanner (nuclei templates + custom checks). "
@@ -596,6 +632,7 @@ class ToolDispatcher:
         "run_param_discovery", "run_post_param_discovery", "run_api_fuzz",
         "run_cors_check", "run_cms_exploit", "run_rce_scan",
         "run_sqlmap_targeted", "run_sqlmap_on_file", "run_jwt_audit",
+        "run_rtw_capability",
     }
 
     # Real HTTP-method semantics per tool, so AutopilotGuard's method policy
@@ -617,6 +654,7 @@ class ToolDispatcher:
         "run_sqlmap_targeted": "POST",
         "run_sqlmap_on_file": "POST",
         "run_jwt_audit": "GET",
+        "run_rtw_capability": "GET",
     }
 
     def __init__(self, domain: str, memory: HuntMemory,
@@ -814,6 +852,20 @@ class ToolDispatcher:
                     max_urls=int(args.get("max_urls", self.max_urls)),
                 )
                 obs = self._summarize_recon(domain, ok)
+
+            elif name == "run_rtw_capability":
+                # RhodawkAI Edition: deterministic reconFTW delegation. The
+                # adapter re-checks capabilities.json, dedup/freshness, and its
+                # own fail-closed scope gate — the model only picked the typed
+                # capability ID; it cannot override the routing decision.
+                from tools.rtw_adapter import run_capability as _rtw_run
+                res = _rtw_run(
+                    str(args.get("capability_id", "")),
+                    domain,
+                    checker=self._guard._scope_checker,
+                    force=bool(args.get("force", False)),
+                )
+                obs = self._summarize_rtw_result(res)
 
             elif name == "run_vuln_scan":
                 ok = h.run_vuln_scan(
@@ -1017,6 +1069,32 @@ class ToolDispatcher:
             self._guard._scope_checker.filter_file(urls_file)
 
     # ── Observation formatters ──────────────────────────────────────────────
+
+    def _summarize_rtw_result(self, res: dict) -> str:
+        """Render an rtw_adapter.run_capability() result as observation text."""
+        status = res.get("status", "UNKNOWN")
+        lines = [f"run_rtw_capability[{res.get('capability_id', '?')}]: {status}"]
+        if res.get("cached"):
+            lines.append("Served from rtw_manifest.json cache (7-day TTL) — no subprocess run.")
+        reason = res.get("reason", "")
+        if reason:
+            lines.append(f"Reason: {reason}")
+        entry = res.get("entry") or {}
+        if entry:
+            if entry.get("findings_count") is not None:
+                lines.append(f"Finding lines collected: {entry['findings_count']}")
+            std = entry.get("standard_outputs") or {}
+            if std.get("subdomains"):
+                lines.append(f"Subdomains published: {std['subdomains']}")
+            if std.get("urls"):
+                lines.append(f"URLs published: {std['urls']}")
+            filt = entry.get("filter") or {}
+            if filt.get("lines_dropped"):
+                lines.append(f"Out-of-scope lines dropped post-call: {filt['lines_dropped']}")
+        if res.get("blocked"):
+            lines.append("BLOCKED by the fail-closed scope gate — nothing was run toward this target.")
+        lines.append("Manifest: ~/.bughunter/recon/<host>/rtw_manifest.json")
+        return "\n".join(lines)
 
     def _summarize_recon(self, domain: str, ok: bool) -> str:
         h = _h()
@@ -1405,14 +1483,15 @@ You have a set of tools that execute real security scans. Use them strategically
 CORE RULES:
 1. Always start with run_recon if no recon data exists yet.
 2. After recon, read_recon_summary to understand the attack surface before choosing next tool.
-3. Prioritize by impact: CMS exploits > RCE > SQLi > IDOR > secrets > info.
-4. If Drupal or WordPress is detected → run_cms_exploit immediately.
-5. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
-6. If parameterized URLs found → run_sqlmap_targeted.
-7. If JWT tokens appear in any recon data → run_jwt_audit.
-8. Maintain your notes via update_working_memory after each significant discovery.
-9. Call finish when: all high-priority tools done, time running low, or no new attack surface.
-10. DO NOT repeat a tool that already completed in this session unless explicitly justified.
+3. If recon_summary flags a capability gap and capabilities.json marks it RTW_AVAILABLE, call run_rtw_capability before proceeding.
+4. Prioritize by impact: CMS exploits > RCE > SQLi > IDOR > secrets > info.
+5. If Drupal or WordPress is detected → run_cms_exploit immediately.
+6. If Java/Tomcat/JBoss/Spring is detected → run_rce_scan + run_post_param_discovery.
+7. If parameterized URLs found → run_sqlmap_targeted.
+8. If JWT tokens appear in any recon data → run_jwt_audit.
+9. Maintain your notes via update_working_memory after each significant discovery.
+10. Call finish when: all high-priority tools done, time running low, or no new attack surface.
+11. DO NOT repeat a tool that already completed in this session unless explicitly justified.
 
 Think step by step. Pick the highest-impact next action given what you know."""
 

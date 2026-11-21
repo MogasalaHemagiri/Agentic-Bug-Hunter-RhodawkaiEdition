@@ -33,6 +33,14 @@ TOOL_META: dict[str, ToolSecurity] = {
         requires_approval=True, approval_level=ApprovalLevel.APPROVAL_REQUIRED,
         idempotent=False,
     ),
+    # reconFTW gap-fill delegation (RhodawkAI Edition): same posture as recon —
+    # scope-required (the adapter additionally fail-closes on its own gate),
+    # approval required, network-touching, not read-only.
+    "bughunter_run_rtw_capability": ToolSecurity(
+        active_testing=True, network_access=True, requires_scope=True,
+        requires_approval=True, approval_level=ApprovalLevel.APPROVAL_REQUIRED,
+        idempotent=False,
+    ),
     "bughunter_attack_surface": ToolSecurity(read_only=True),
     "bughunter_subdomains": ToolSecurity(read_only=True),
     "bughunter_endpoints": ToolSecurity(read_only=True),

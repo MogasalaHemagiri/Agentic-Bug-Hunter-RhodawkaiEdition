@@ -21,9 +21,88 @@ log_step()  { echo -e "    ${CYAN}[>]${NC} $1"; }
 log_done()  { echo -e "    ${GREEN}[✓]${NC} $1"; }
 log_vuln()  { echo -e "    ${RED}[VULN]${NC} $1"; }
 
-TARGET="${1:?Usage: $0 <target> [--quick]  (target = FQDN, IP, CIDR, or path to a file of domains/hosts)}"
-QUICK_MODE="${2:-}"
+# ── Argument parsing ──────────────────────────────────────────────────────────
+# Upstream accepted: ./recon_engine.sh <target> [--quick]. The RhodawkAI
+# Edition adds repeatable --scope-domain/--scope-exclude flags (forwarded to
+# the reconFTW gap-fill adapter, which enforces ABH's fail-closed ScopeChecker)
+# plus an explicit --no-scope-check opt-out for local demo testing. Positional
+# behavior (<target> [--quick]) is preserved.
+TARGET=""
+QUICK_MODE=""
+SCOPE_DOMAIN_ARGS=()
+SCOPE_EXCLUDE_ARGS=()
+SCOPE_OPT_OUT=0
+_rtw_engine_usage() {
+    echo "Usage: $0 <target> [--quick]"
+    echo "                     [--scope-domain PATTERN]... [--scope-exclude PATTERN]..."
+    echo "                     [--no-scope-check]"
+    echo "  target = FQDN, IP, CIDR, or path to a file of domains/hosts"
+    echo "  --scope-domain / --scope-exclude are forwarded to the reconFTW"
+    echo "  gap-fill adapter (Phases 1.5/5.5). Without them (or without"
+    echo "  --no-scope-check) reconFTW delegation fails closed."
+}
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --quick)
+            QUICK_MODE="--quick"; shift ;;
+        --normalize-only)
+            # Hidden upstream mode (tests/test_target_normalize.py): print the
+            # normalized target and exit; see the QUICK_MODE check below.
+            QUICK_MODE="--normalize-only"; shift ;;
+        --scope-domain)
+            [ $# -lt 2 ] && { echo "[-] --scope-domain requires a pattern" >&2; exit 1; }
+            SCOPE_DOMAIN_ARGS+=("$2"); shift 2 ;;
+        --scope-exclude)
+            [ $# -lt 2 ] && { echo "[-] --scope-exclude requires a pattern" >&2; exit 1; }
+            SCOPE_EXCLUDE_ARGS+=("$2"); shift 2 ;;
+        --no-scope-check)
+            SCOPE_OPT_OUT=1; shift ;;
+        -h|--help)
+            _rtw_engine_usage; exit 0 ;;
+        *)
+            if [ -z "$TARGET" ]; then
+                TARGET="$1"
+            else
+                echo "[-] unexpected extra argument: $1" >&2
+                _rtw_engine_usage >&2
+                exit 1
+            fi
+            shift ;;
+    esac
+done
+[ -n "$TARGET" ] || { _rtw_engine_usage >&2; exit 1; }
 BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ── reconFTW gap-fill plumbing (RhodawkAI Edition, Fixes 1+2) ─────────────────
+# Deterministic delegation to reconFTW's equivalent functions via
+# tools/rtw_adapter.py — never an LLM judgment call. Two split phases:
+#   Phase 1.5 — subdomain/infra gap-fill BEFORE Phase 2 (httpx), so newly
+#               discovered subdomains are probed in the same run.
+#   Phase 5.5 — web/JS/TLS gap-fill after Phase 5, BEFORE Phase 6 (ffuf), so
+#               the URL corpus feeds downstream phases and the Summary.
+# Scope patterns are forwarded verbatim; the adapter refuses to spawn any
+# reconFTW subprocess without them (fail closed) unless --no-scope-check.
+RTW_ADAPTER="$BASE_DIR/tools/rtw_adapter.py"
+RTW_SCOPE_ARGS=()
+if [ "$SCOPE_OPT_OUT" = "1" ]; then
+    RTW_SCOPE_ARGS+=(--no-scope-check)
+else
+    for _p in "${SCOPE_DOMAIN_ARGS[@]}"; do RTW_SCOPE_ARGS+=(--scope-domain "$_p"); done
+    for _p in "${SCOPE_EXCLUDE_ARGS[@]}"; do RTW_SCOPE_ARGS+=(--scope-exclude "$_p"); done
+fi
+
+_rtw_ready() {
+    [ -n "${RTW_HOME:-}" ] || return 1
+    [ -f "$RTW_ADAPTER" ] || return 1
+    command -v python3 >/dev/null 2>&1 || return 1
+}
+
+_rtw_run_phase() {
+    # $1 = phase id ("1.5" | "5.5"); SKIPPED capabilities are normal.
+    _rtw_ready || return 1
+    python3 "$RTW_ADAPTER" phase "$1" --target "$TARGET" --recon-dir "$RECON_DIR" \
+        ${RTW_SCOPE_ARGS[@]+"${RTW_SCOPE_ARGS[@]}"}
+}
 
 # Auth-aware hunting: load BBHUNT_AUTH_HEADERS / BBHUNT_SESSION_ID into
 # BB_AUTH_ARGS=(-H 'Name: val' ...). Empty session = no-op.
@@ -372,6 +451,41 @@ log_ok "Seed host included; probe list now: $TOTAL_SUBS host(s)"
 fi  # end of domain-only subdomain enum block
 
 # ============================================================
+# Phase 1.5: reconFTW Subdomain/Infra Gap-Fill (RhodawkAI Edition)
+# ASN/CIDR enum, DNS permutation, CDN/origin isolation — delegated to
+# reconFTW (sub_asn / sub_permut / cdnprovider) via tools/rtw_adapter.py.
+# Discovered subdomains are merged into subdomains/all.txt (scope-filtered,
+# deduplicated) so Phase 2 httpx probes them in this same run.
+# ============================================================
+echo ""
+log_info "Phase 1.5: reconFTW Subdomain/Infra Gap-Fill"
+if _rtw_ready; then
+    if [ "$SCOPE_OPT_OUT" = "1" ]; then
+        log_warn "reconFTW gap-fill running UNSCOPED (--no-scope-check) — demo/testing only"
+    elif [ ${#SCOPE_DOMAIN_ARGS[@]} -eq 0 ]; then
+        log_warn "No --scope-domain given — reconFTW delegation will fail closed (adapter blocks; pass scope patterns or --no-scope-check)"
+    fi
+    _rtw_run_phase "1.5" || log_step "reconFTW Phase 1.5 reported failures — continuing native pipeline"
+    mkdir -p "$RECON_DIR/subdomains"
+    touch "$RECON_DIR/subdomains/all.txt"
+    RTW_SUB_FILES=0
+    for _f in "$RECON_DIR"/rtw/*/rtw_subdomains.txt; do
+        [ -s "$_f" ] || continue
+        cat "$_f" >> "$RECON_DIR/subdomains/all.txt"
+        RTW_SUB_FILES=$((RTW_SUB_FILES + 1))
+    done
+    if [ "$RTW_SUB_FILES" -gt 0 ]; then
+        sort -u -o "$RECON_DIR/subdomains/all.txt" "$RECON_DIR/subdomains/all.txt"
+        TOTAL_SUBS=$(wc -l < "$RECON_DIR/subdomains/all.txt")
+        log_done "reconFTW gap-fill: merged subdomains from $RTW_SUB_FILES file(s); probe list now: $TOTAL_SUBS host(s)"
+    else
+        log_step "No reconFTW subdomain output to merge (skipped capabilities / missing deps are normal)"
+    fi
+else
+    log_step "reconFTW gap-fill not configured (RTW_HOME unset) — skipping (upstream behavior)"
+fi
+
+# ============================================================
 # Phase 2: HTTP Probing
 # ============================================================
 echo ""
@@ -542,6 +656,36 @@ if [ -s "$RECON_DIR/urls/js_files.txt" ]; then
     fi
 else
     log_warn "No JS files found — skipping JS analysis"
+fi
+
+# ============================================================
+# Phase 5.5: reconFTW Web/JS/TLS Gap-Fill (RhodawkAI Edition)
+# JS source-map/AST secret extraction, virtual-host discovery, TLS IP pivots,
+# favicon fingerprinting — delegated to reconFTW (jschecks / virtualhosts /
+# tls_ip_pivots / favirecon_tech) via tools/rtw_adapter.py. Newly discovered
+# JS endpoints/routes are merged into the URL corpus (urls/all.txt) so Phase 6
+# directory fuzzing, the candidate classifiers and the final Summary see them.
+# ============================================================
+echo ""
+log_info "Phase 5.5: reconFTW Web/JS/TLS Gap-Fill"
+if _rtw_ready; then
+    _rtw_run_phase "5.5" || log_step "reconFTW Phase 5.5 reported failures — continuing native pipeline"
+    mkdir -p "$RECON_DIR/urls"
+    touch "$RECON_DIR/urls/all.txt"
+    RTW_URL_FILES=0
+    for _f in "$RECON_DIR"/rtw/*/rtw_urls.txt; do
+        [ -s "$_f" ] || continue
+        cat "$_f" >> "$RECON_DIR/urls/all.txt"
+        RTW_URL_FILES=$((RTW_URL_FILES + 1))
+    done
+    if [ "$RTW_URL_FILES" -gt 0 ]; then
+        sort -u -o "$RECON_DIR/urls/all.txt" "$RECON_DIR/urls/all.txt"
+        log_done "reconFTW gap-fill: merged URLs from $RTW_URL_FILES file(s) into urls/all.txt"
+    else
+        log_step "No reconFTW URL output to merge (skipped capabilities / missing deps are normal)"
+    fi
+else
+    log_step "reconFTW gap-fill not configured (RTW_HOME unset) — skipping (upstream behavior)"
 fi
 
 # ============================================================
@@ -824,6 +968,20 @@ echo "  CI/CD findings:   $(find "$RECON_DIR/cicd" -name 'scan_results.txt' -exe
 echo "  Nuclei hits:       $(wc -l < "$RECON_DIR/nuclei/findings.jsonl" | tr -d ' ')"
 [ -f "$RECON_DIR/takeover_candidates.txt" ] && \
 echo "  Takeover candidates: $(wc -l < "$RECON_DIR/takeover_candidates.txt" | tr -d ' ')"
+
+# RhodawkAI Edition: reconFTW gap-fill results (Phases 1.5 + 5.5)
+for _rtw_dir in "$RECON_DIR"/rtw/*/; do
+    [ -d "$_rtw_dir" ] || continue
+    _rtw_fn="$(basename "$_rtw_dir")"
+    _rtw_n=$(cat "$_rtw_dir"rtw_*.txt 2>/dev/null | grep -c . || true)
+    if [ "${_rtw_n:-0}" -gt 0 ]; then
+        echo "  rtw gap-fill ${_rtw_fn}: ${_rtw_n} line(s) (reconftw delegate)"
+    fi
+done
+[ -f "$RECON_DIR/subdomains/all.txt" ] && \
+echo "  Probe list (post gap-fill): $(wc -l < "$RECON_DIR/subdomains/all.txt" | tr -d ' ') subdomains"
+[ -f "$RECON_DIR/urls/all.txt" ] && \
+echo "  URL corpus (post gap-fill): $(wc -l < "$RECON_DIR/urls/all.txt" | tr -d ' ') urls"
 
 echo ""
 echo "  Results: $RECON_DIR/"

@@ -482,3 +482,46 @@ case "$AGENT" in
         exit 2
         ;;
 esac
+
+# ── reconFTW capability-delegation setup (RhodawkAI Edition) ─────────────────
+# After the 7-target dispatch, clone reconFTW at the pinned commit so the
+# recon gap-fill (recon_engine.sh Phases 1.5/5.5) can delegate. Standalone
+# release: RTW_HOME lives entirely under this fork's own control — no external
+# product, config format, or secrets source is wired in. Set RTW_HOME to
+# override the default location. A missing clone is NOT an error: the fork
+# runs exactly as upstream ABH without it (gap-fill silently skipped).
+install_rtw_capability_delegation() {
+    local rtw_home="${RTW_HOME:-$HOME/Tools/reconftw}"
+    local rtw_pin="39252113a854bdac0b785f144b9fae1fa8ca35fc"
+    if [ -x "$rtw_home/reconftw.sh" ]; then
+        echo "[+] reconFTW already present at $rtw_home"
+        if [ -d "$rtw_home/.git" ]; then
+            local head
+            head="$(git -C "$rtw_home" rev-parse HEAD 2>/dev/null || echo '?')"
+            if [ "$head" = "$rtw_pin" ]; then
+                echo "[+] reconFTW HEAD matches pinned commit $rtw_pin"
+            else
+                echo "[!] reconFTW HEAD $head != pinned $rtw_pin — gap-fill still works, but re-clone for the verified snapshot"
+            fi
+        fi
+    elif command -v git >/dev/null 2>&1; then
+        echo "[*] Cloning reconFTW (pinned $rtw_pin) to $rtw_home ..."
+        if git clone https://github.com/six2dez/reconftw "$rtw_home" \
+            && git -C "$rtw_home" checkout -q "$rtw_pin"; then
+            echo "[+] reconFTW pinned at $rtw_pin"
+        else
+            echo "[!] reconFTW clone failed — gap-fill stays disabled (upstream behavior)"
+            return 0
+        fi
+    else
+        echo "[!] git not found — skipping reconFTW clone (gap-fill stays disabled)"
+        return 0
+    fi
+    # Build the single source of truth every runtime reads.
+    if command -v python3 >/dev/null 2>&1; then
+        python3 "$(cd "$(dirname "$0")" && pwd)/bughunter/tools/capability_registry.py" --rebuild --banner \
+            || echo "[!] capability_registry --rebuild failed — run it manually before hunting"
+    fi
+    echo "[i] Install the gap-fill backing binaries with: bash install_tools.sh --rtw-deps"
+}
+install_rtw_capability_delegation

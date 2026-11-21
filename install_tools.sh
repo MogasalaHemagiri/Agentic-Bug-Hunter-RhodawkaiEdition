@@ -3,16 +3,22 @@
 # Bug Bounty Tool Installer
 # Installs all required tools via Homebrew and Go
 # Usage: ./install_tools.sh [--with-cicd-scanner] [--with-credential-attack]
+#                           [--rtw-deps]
+#   --rtw-deps: install ONLY the reconFTW gap-fill backing binaries (pinned
+#               go-install, per capability). Never runs reconFTW's own
+#               installer (~70 unrelated binaries) and never brew-floats.
 # =============================================================================
 
 set -euo pipefail
 
 INSTALL_CICD_SCANNER=false
 INSTALL_CREDENTIAL_ATTACK=false
+INSTALL_RTW_DEPS=false
 for arg in "$@"; do
     case "$arg" in
         --with-cicd-scanner) INSTALL_CICD_SCANNER=true ;;
         --with-credential-attack) INSTALL_CREDENTIAL_ATTACK=true ;;
+        --rtw-deps) INSTALL_RTW_DEPS=true ;;
     esac
 done
 
@@ -46,6 +52,24 @@ GOPATH="$(go env GOPATH 2>/dev/null || true)"
 GOPATH="${GOPATH:-$HOME/go}"
 if [[ ":$PATH:" != *":$GOPATH/bin:"* ]]; then
     export PATH="$PATH:$GOPATH/bin"
+fi
+
+# ── reconFTW gap-fill dependencies (RhodawkAI Edition, --rtw-deps) ────────────
+# Installs ONLY the 7 delegated capabilities' backing binaries, pinned via
+# tools/capability_registry.py (reconFTW tools.lock pins where present; pin-
+# on-first-install for the rest — no brew floating, no reconFTW install.sh).
+if [ "$INSTALL_RTW_DEPS" = "true" ]; then
+    echo ""
+    echo "[*] Installing reconFTW gap-fill dependencies (pinned per-capability)..."
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if ! command -v python3 &>/dev/null; then
+        log_err "python3 required for capability_registry.py (it is also required by the engine)"
+        exit 1
+    fi
+    python3 "$SCRIPT_DIR/bughunter/tools/capability_registry.py" --install-all || true
+    python3 "$SCRIPT_DIR/bughunter/tools/capability_registry.py" --rebuild --banner || true
+    log_ok "reconFTW gap-fill dependency install finished"
+    exit 0
 fi
 
 # Tools to install via Homebrew

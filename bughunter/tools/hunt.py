@@ -487,6 +487,15 @@ def run_recon(domain, quick=False, scope_lock=False):
     cmd = ["bash", script, domain]
     if quick_flag:
         cmd.append(quick_flag)
+    # Forward the active ScopeChecker's allow/exclude patterns so the
+    # reconFTW gap-fill (recon_engine.sh Phases 1.5/5.5) inherits program
+    # scope. The adapter fails closed without them: no scope configured here
+    # means reconFTW delegation is refused (native pipeline unaffected).
+    if _SCOPE_CHECKER is not None:
+        for pattern in getattr(_SCOPE_CHECKER, "domains", None) or []:
+            cmd += ["--scope-domain", str(pattern)]
+        for pattern in getattr(_SCOPE_CHECKER, "excluded_domains", None) or []:
+            cmd += ["--scope-exclude", str(pattern)]
 
     # Run with live output
     try:
