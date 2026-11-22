@@ -1,11 +1,17 @@
 # Sensitive output — never commit these
 findings/
 recon/
+bughunter/recon/
 reports/
 hunt-memory/
 config.json
 *.burp
 *.json.bak
+*.prev.json
+
+# Scan workdirs + caches (launch hygiene)
+.work/
+.pytest_cache/
 
 # API keys and tokens
 .env

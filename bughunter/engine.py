@@ -144,6 +144,7 @@ COMMAND_ALIASES = {
     "triage": {"triage", "t"},
     "report": {"report", "rep"},
     "chain": {"chain", "c"},
+    "doctor": {"doctor"},
 }
 
 
@@ -956,6 +957,156 @@ def cmd_status(args):
     print()
 
 
+def _doctor_chromium_path() -> str:
+    """The single managed Chromium path recorded by install_tools.sh --browser
+    (capabilities.json "chromium_path"). Never scans the disk for browsers —
+    reads only the recorded value."""
+    env = os.environ.get("BUGHUNTER_CAPABILITIES_FILE")
+    if env:
+        path = Path(env).expanduser()
+    else:
+        home = os.environ.get("BUGHUNTER_HOME")
+        path = (Path(home).expanduser() if home
+                else Path.home() / ".bughunter") / "capabilities.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("chromium_path", "")
+        return value if isinstance(value, str) else ""
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def cmd_doctor(args):
+    """Step 3: `rhodawk doctor` — fast (<5s) environment diagnostic.
+    PASS / WARN / FAIL per check with the exact one-line fix command.
+    Exit 0 when nothing FAILs, 1 otherwise."""
+    import shutil  # noqa: PLC0415
+    import concurrent.futures  # noqa: PLC0415
+
+    sys.path.insert(0, str(HERE))
+    try:
+        from tools.capability_registry import check_rtw_repo  # noqa: PLC0415
+    except ImportError:
+        from capability_registry import check_rtw_repo  # noqa: PLC0415
+
+    results = []  # (status, label, detail, fix)
+
+    def record(status, label, detail, fix=""):
+        results.append((status, label, detail, fix))
+
+    # 1. Core binaries
+    core = ["subfinder", "httpx", "katana", "gau", "ffuf", "nuclei", "nmap", "jq"]
+    missing = [t for t in core if not shutil.which(t)]
+    if missing:
+        record("WARN", "Core binaries", f"missing: {', '.join(missing)}",
+               "bash install_tools.sh")
+    else:
+        record("PASS", "Core binaries", f"{len(core)}/{len(core)} on PATH")
+
+    # 2. reconFTW checkout: RTW_HOME + pinned commit + executable bit
+    rtw = check_rtw_repo()
+    if not Path(rtw["rtw_home"]).is_dir():
+        record("FAIL", "reconFTW checkout",
+               f"not found at {rtw['rtw_home']} (RTW_HOME)",
+               "bash install.sh   # clones reconFTW + persists rtw_home")
+    elif not rtw["executable"]:
+        record("FAIL", "reconFTW checkout", f"{rtw['script']} is not executable",
+               f'chmod +x "{rtw["script"]}"')
+    elif rtw["commit_matches_pin"] is False:
+        record("WARN", "reconFTW checkout",
+               f"HEAD {str(rtw.get('head_commit', '?'))[:9]} != pinned snapshot",
+               "bash install.sh   # re-clone at the pinned commit")
+    elif rtw["commit_matches_pin"] is None:
+        record("WARN", "reconFTW checkout",
+               "not a git checkout — pinned commit unknown",
+               "bash install.sh   # re-clone for the verified snapshot")
+    else:
+        record("PASS", "reconFTW checkout",
+               f"{str(rtw.get('head_commit', '?'))[:9]} matches pin, +x ok")
+
+    # 3. Single managed Chromium (optional — headless SPA crawling)
+    chromium = _doctor_chromium_path()
+    if not chromium:
+        record("WARN", "Managed Chromium",
+               "chromium_path unset — headless SPA crawling disabled (optional)",
+               "bash install_tools.sh --browser")
+    elif not (Path(chromium).is_file() and os.access(chromium, os.X_OK)):
+        record("WARN", "Managed Chromium",
+               f"{chromium} recorded but not executable",
+               "bash install_tools.sh --browser")
+    else:
+        record("PASS", "Managed Chromium", chromium)
+
+    # 4. API keys + saved LLM provider connectivity (READY)
+    for var, purpose in (("PDCP_API_KEY", "ProjectDiscovery API (subfinder/httpx sources)"),
+                         ("CHAOS_API_KEY", "Chaos public recon dataset"),
+                         ("H1_API_TOKEN", "HackerOne scope sync")):
+        if os.environ.get(var):
+            record("PASS", var, "set")
+        else:
+            record("WARN", var, f"unset — {purpose} disabled (optional)",
+                   f"export {var}=...")
+    cfg = load_config()
+    provider = (os.environ.get("BRAIN_PROVIDER") or cfg.get("provider") or "")
+    if not provider:
+        record("WARN", "LLM provider", "not configured — AI analysis disabled",
+               "python3 bughunter/engine.py setup")
+    else:
+        try:
+            client = _get_client()
+        except Exception as exc:
+            client = None
+            record("WARN", f"LLM provider {provider}", f"init failed: {exc}",
+                   "python3 bughunter/engine.py setup")
+        if client is not None:
+            if not getattr(client, "available", False):
+                record("WARN", f"LLM provider {provider}",
+                       "configured but unavailable (key/endpoint)",
+                       "python3 bughunter/engine.py setup")
+            else:
+                reply = ""
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                        fut = ex.submit(client.chat, None,
+                                        "You are a health probe.",
+                                        "Reply with the single word READY")
+                        reply = (fut.result(timeout=4) or "").strip().upper()
+                except Exception:
+                    reply = ""
+                if "READY" in reply:
+                    record("PASS", f"LLM provider {provider}", "responded READY")
+                else:
+                    record("WARN", f"LLM provider {provider}",
+                           "no READY within 4s (unreachable or slow)",
+                           "python3 bughunter/engine.py setup")
+
+    # 5. MCP module import (bughunter mcp doctor parity)
+    mcp_cli = HERE / "mcp" / "bughunter-mcp" / "cli.py"
+    try:
+        import importlib.util  # noqa: PLC0415
+        spec = importlib.util.spec_from_file_location("abh_mcp_cli_doctor", mcp_cli)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        record("PASS", "MCP module", "cli.py imports cleanly")
+    except Exception as exc:
+        record("FAIL", "MCP module", f"import failed: {exc}",
+               "python3 bughunter/mcp/bughunter-mcp/cli.py doctor")
+
+    header("Environment doctor (rhodawk doctor)")
+    for status, label, detail, fix in results:
+        color = {"PASS": GREEN, "WARN": YELLOW, "FAIL": RED}[status]
+        print(f"{color}  [{status}]{NC} {label:<20} {detail}")
+        if fix:
+            print(f"        fix: {fix}")
+    fails = sum(1 for r in results if r[0] == "FAIL")
+    warns = sum(1 for r in results if r[0] == "WARN")
+    print()
+    if fails:
+        print(f"{RED}  {fails} FAIL, {warns} WARN — fix the FAILs above{NC}")
+        raise SystemExit(1)
+    print(f"{GREEN}  0 FAIL, {warns} WARN — environment ready{NC}")
+    raise SystemExit(0)
+
+
 def cmd_mcp(args):
     """MCP serve / doctor / tools — delegates to mcp/bughunter-mcp/cli.py."""
     mcp_dir = Path(__file__).resolve().parent / "mcp" / "bughunter-mcp"
@@ -1061,6 +1212,7 @@ def main():
     sub.add_parser("providers", aliases=["p"], help="Show all providers + API key status")
     sub.add_parser("models",    aliases=["m"], help="List available models for active provider")
     sub.add_parser("status",    aliases=["s"], help="Show hunt pipeline status")
+    sub.add_parser("doctor",    help="Fast environment diagnostic (PASS/WARN/FAIL + 1-line fixes)")
     sub.add_parser("chat",      aliases=["ask"], help="Interactive AI shell")
 
     p_recon = sub.add_parser("recon", aliases=["r"], help="Recon + AI surface analysis")
@@ -1125,7 +1277,8 @@ def main():
         if not os.environ.get(env_var) and cfg.get(env_var):
             os.environ[env_var] = cfg[env_var]
 
-    quiet_cmds = {"status", "providers", "models", "mcp", "login", "auth", None}
+    quiet_cmds = {"status", "providers", "models", "mcp", "login", "auth",
+                  "doctor", None}
     if not getattr(args, "no_banner", False) and args.command not in quiet_cmds:
         _print_banner()
 
@@ -1143,6 +1296,7 @@ def main():
         "chain":     cmd_chain,
         "chat":      cmd_chat,
         "status":    cmd_status,
+        "doctor":    cmd_doctor,
         "mcp":       cmd_mcp,
     }
 
