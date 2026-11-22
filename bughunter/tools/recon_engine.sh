@@ -7,6 +7,31 @@
 
 set -o pipefail
 
+# ── RTW_HOME resolution (live-run fix, fresh shells) ──────────────────────────
+# install.sh persists rtw_home to ~/.bughunter/config.json and `rhodawk
+# doctor` already reads it — but a fresh shell without `export RTW_HOME=...`
+# made the engine skip Phase 1.5/5.5 entirely (`[[ -n "${RTW_HOME:-}" ]]`
+# gate). Resolve it ONCE here, before any phase: the environment always
+# wins, config.json fills the gap.
+if [ -z "${RTW_HOME:-}" ]; then
+    _rtw_cfg="${BUGHUNTER_CONFIG_FILE:-$HOME/.bughunter/config.json}"
+    _rtw_from_cfg=""
+    if [ -f "$_rtw_cfg" ] && command -v python3 >/dev/null 2>&1; then
+        _rtw_from_cfg="$(python3 -c '
+import json, sys
+try:
+    v = json.loads(open(sys.argv[1], encoding="utf-8").read()).get("rtw_home", "")
+except Exception:
+    v = ""
+print(v if isinstance(v, str) else "")
+' "$_rtw_cfg" 2>/dev/null || true)"
+    fi
+    if [ -n "$_rtw_from_cfg" ]; then
+        export RTW_HOME="$_rtw_from_cfg"
+    fi
+    unset _rtw_cfg _rtw_from_cfg
+fi
+
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
