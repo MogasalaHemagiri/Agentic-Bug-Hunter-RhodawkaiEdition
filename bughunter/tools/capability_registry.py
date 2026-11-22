@@ -229,11 +229,26 @@ def capabilities_meta_path() -> Path:
     return capabilities_path().with_name("capabilities_meta.json")
 
 
+def _rtw_home_from_config() -> Path:
+    """rtw_home persisted by install.sh into ~/.bughunter/config.json.
+    BUGHUNTER_CONFIG_FILE overrides the path for tests/CI. Never raises."""
+    path = (os.environ.get("BUGHUNTER_CONFIG_FILE")
+            or str(Path.home() / ".bughunter" / "config.json"))
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8")).get("rtw_home")
+        return Path(str(value)).expanduser()
+    except (OSError, ValueError, AttributeError, TypeError):
+        return Path.home() / "Tools" / "reconftw"
+
+
 def rtw_home() -> Path:
+    """Resolution order: RTW_HOME env → config.json rtw_home (persisted by
+    install.sh) → ~/Tools/reconftw. New shells therefore never need
+    RTW_HOME re-exported after install."""
     env = os.environ.get("RTW_HOME")
     if env:
         return Path(env).expanduser()
-    return Path.home() / "Tools" / "reconftw"
+    return _rtw_home_from_config()
 
 
 def rtw_script() -> Path:

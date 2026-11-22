@@ -60,6 +60,11 @@ CLASS_CDN_EDGE = "CDN_EDGE"
 CLASS_SAAS = "THIRD_PARTY_SAAS"
 CLASS_ORIGIN = "FIRST_PARTY_ORIGIN"
 
+# Same status vocabulary as rtw_adapter.py's manifest entries (fusion is
+# stdlib-only and must not import the adapter).
+RESULT_FAILED = "FAILED"
+RESULT_SKIPPED_SILENT = "SKIPPED_SILENT"
+
 # (suffix, provider) — CNAME/apex suffix match (trailing dot stripped first).
 _CDN_SUFFIXES: Tuple[Tuple[str, str], ...] = (
     (".cloudflare.net", "Cloudflare"), (".cloudflare.com", "Cloudflare"),
@@ -280,9 +285,16 @@ def parse_httpx_line(line: str) -> Optional[dict]:
         return None
     url = match.group(1)
     groups = re.findall(r"\[([^\]]*)\]", match.group(2))
-    if not groups or not groups[0].isdigit() or len(groups[0]) != 3:
+    if not groups or len(groups[0]) != 3 and not re.search(r"\d{3}", groups[0]):
         return None
-    status_code = int(groups[0])
+    # Multi-hop status: httpx reports redirect chains in one bracket, e.g.
+    # `[308,200]` — the FINAL hop is the live status. The old
+    # `int(groups[0])` mis-parsed it, so such hosts degraded to bare rows
+    # with status None and delta.json recorded status flips "from": null.
+    hops = re.findall(r"\d{3}", groups[0])
+    if not hops:
+        return None
+    status_code = int(hops[-1])
     rest = groups[1:]
     content_length = None
     if rest and rest[-1].isdigit():
@@ -550,13 +562,22 @@ def build_truth(recon_dir: Path, target: str,
             latest[cid] = entry
     for cid in sorted(latest):
         e = latest[cid]
+        status = e.get("status", "")
+        reason = e.get("reason", "")
+        if not reason and status in (RESULT_FAILED, RESULT_SKIPPED_SILENT):
+            # Live-run fix: the truth doc must keep the failure reason
+            # visible — fall back to the last non-empty stderr line the
+            # manifest entry stored.
+            tail = [ln.strip() for ln in str(e.get("stderr_tail", "")).splitlines()
+                    if ln.strip()]
+            reason = tail[-1] if tail else ""
         tool_health.append({
             "capability_id": cid,
             "rtw_function": e.get("rtw_function", ""),
-            "status": e.get("status", ""),
+            "status": status,
             "duration_secs": e.get("duration_secs"),
             "net_new_count": e.get("net_new_count"),
-            "reason": e.get("reason", ""),
+            "reason": reason,
         })
 
     origin_ips = {ip for h in hosts if h["asset_class"] == CLASS_ORIGIN

@@ -722,13 +722,51 @@ fi
 
 # katana — active crawl on live hosts (5 min cap prevents infinite crawl on
 # content-heavy sites like news/video portals)
+
+# Single managed Chromium (Step 3): the exact path lives in capabilities.json
+# ("chromium_path", recorded once by install_tools.sh --browser). NO disk
+# scanning at runtime — if that path is set and executable, flip katana into
+# headless SPA mode (CHROME_BIN/CHROME_PATH + -system-chrome) so JS chunk
+# extraction reaches SPA routes; otherwise standard HTTP crawl.
+_abh_chromium_path() {
+    python3 - <<'PY' 2>/dev/null || true
+import json
+import os
+from pathlib import Path
+
+cap = os.environ.get("BUGHUNTER_CAPABILITIES_FILE")
+if cap:
+    p = Path(cap).expanduser()
+else:
+    bh = os.environ.get("BUGHUNTER_HOME")
+    p = (Path(bh).expanduser() if bh
+         else Path.home() / ".bughunter") / "capabilities.json"
+try:
+    val = json.loads(p.read_text()).get("chromium_path", "")
+except Exception:
+    val = ""
+print(val if isinstance(val, str) else "")
+PY
+}
+CHROMIUM_PATH="$(_abh_chromium_path)"
+KATANA_BROWSER_ARGS=()
+if [ -n "$CHROMIUM_PATH" ] && [ -x "$CHROMIUM_PATH" ]; then
+    export CHROME_BIN="$CHROMIUM_PATH" CHROME_PATH="$CHROMIUM_PATH"
+    KATANA_BROWSER_ARGS=(-headless -system-chrome)
+    log_step "Managed Chromium: $CHROMIUM_PATH — katana headless SPA mode (JS chunk extraction)"
+fi
+
 if command -v katana &>/dev/null && [ -s "$RECON_DIR/live/urls.txt" ]; then
     log_step "Running katana (active crawl, 5min cap, top 50 hosts)..."
+    if [ ${#KATANA_BROWSER_ARGS[@]} -eq 0 ]; then
+        log_info "Tip: bash install_tools.sh --browser enables headless SPA crawling"
+    fi
     head -50 "$RECON_DIR/live/urls.txt" > "$RECON_DIR/urls/katana_targets.txt"
     timeout 300 katana \
         -list "$RECON_DIR/urls/katana_targets.txt" \
         -d 3 -jc -kf all -silent \
         -c 50 -p 20 \
+        ${KATANA_BROWSER_ARGS[@]+"${KATANA_BROWSER_ARGS[@]}"} \
         ${BB_AUTH_ARGS[@]+"${BB_AUTH_ARGS[@]}"} \
         -o "$RECON_DIR/urls/katana.txt" 2>/dev/null || true
     log_done "katana: $(wc -l < "$RECON_DIR/urls/katana.txt" 2>/dev/null || echo 0) URLs"

@@ -14,11 +14,13 @@ set -euo pipefail
 INSTALL_CICD_SCANNER=false
 INSTALL_CREDENTIAL_ATTACK=false
 INSTALL_RTW_DEPS=false
+INSTALL_BROWSER=false
 for arg in "$@"; do
     case "$arg" in
         --with-cicd-scanner) INSTALL_CICD_SCANNER=true ;;
         --with-credential-attack) INSTALL_CREDENTIAL_ATTACK=true ;;
         --rtw-deps) INSTALL_RTW_DEPS=true ;;
+        --browser) INSTALL_BROWSER=true ;;
     esac
 done
 
@@ -34,6 +36,82 @@ log_warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 echo "============================================="
 echo "  Bug Bounty Tool Installer"
 echo "============================================="
+
+# ── Single managed Chromium (Step 3, --browser) ───────────────────────────────
+# Installs ONE Chromium binary under ~/.bughunter/browser/ and records its
+# exact absolute path in capabilities.json ("chromium_path"). Consumers
+# (recon_engine.sh Phase 4 katana, rhodawk doctor) read ONLY that recorded
+# path — nothing scans the disk for browsers at runtime.
+install_managed_browser() {
+    local bdir="${BUGHUNTER_HOME:-$HOME/.bughunter}/browser"
+    mkdir -p "$bdir"
+    local managed="$bdir/chromium"
+    local resolved=""
+
+    # Backend 1: Playwright's pinned Chromium (reproducible, no root needed).
+    if python3 -c "import playwright" >/dev/null 2>&1; then
+        log_ok "playwright present — installing its pinned Chromium"
+        python3 -m playwright install chromium >/dev/null 2>&1 || true
+        resolved="$(python3 - <<'PY'
+try:
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        print(p.chromium.executable_path)
+except Exception:
+    pass
+PY
+)"
+    fi
+
+    # Backend 2: a system Chromium, symlinked into the single managed path.
+    if [ -z "$resolved" ] || [ ! -x "$resolved" ]; then
+        for cand in chromium chromium-browser google-chrome google-chrome-stable; do
+            if command -v "$cand" >/dev/null 2>&1; then
+                resolved="$(command -v "$cand")"
+                break
+            fi
+        done
+    fi
+
+    if [ -n "$resolved" ] && [ -x "$resolved" ]; then
+        ln -sfn "$resolved" "$managed"
+        if BUGHUNTER_BROWSER_PATH="$managed" python3 - <<'PY'; then
+import json
+import os
+from pathlib import Path
+
+cap = os.environ.get("BUGHUNTER_CAPABILITIES_FILE")
+if cap:
+    cap_path = Path(cap).expanduser()
+else:
+    bh = os.environ.get("BUGHUNTER_HOME")
+    cap_path = (Path(bh).expanduser() if bh
+                else Path.home() / ".bughunter") / "capabilities.json"
+try:
+    data = json.loads(cap_path.read_text())
+    if not isinstance(data, dict):
+        data = {}
+except (OSError, ValueError):
+    data = {}
+data["chromium_path"] = os.environ["BUGHUNTER_BROWSER_PATH"]
+cap_path.parent.mkdir(parents=True, exist_ok=True)
+cap_path.write_text(json.dumps(data, indent=2))
+print(f"[+] chromium_path recorded in {cap_path}")
+PY
+        log_ok "Managed Chromium ready: $managed"
+        return 0
+        fi
+    fi
+    log_err "No Chromium found — headless SPA crawling stays disabled."
+    echo "    Fix: pip install playwright && python3 -m playwright install chromium"
+    echo "         (or install a system chromium, then re-run: bash install_tools.sh --browser)"
+    return 1
+}
+
+if [ "$INSTALL_BROWSER" = "true" ]; then
+    install_managed_browser || exit 1
+    exit 0
+fi
 
 # ── reconFTW gap-fill dependencies (RhodawkAI Edition, --rtw-deps) ────────────
 # Live-run fix: parsed BEFORE the Homebrew bootstrap. --rtw-deps only requires

@@ -524,6 +524,35 @@ install_rtw_capability_delegation() {
         echo "[!] git not found — skipping reconFTW clone (gap-fill stays disabled)"
         return 0
     fi
+    # Step 3: reconftw.sh MUST carry the +x bit (clones made via zip/copy
+    # drop it, which silently disabled the whole gap-fill) and the resolved
+    # path is persisted so new shells never need RTW_HOME re-exported.
+    chmod +x "$rtw_home/reconftw.sh" 2>/dev/null \
+        || echo "[!] could not chmod +x $rtw_home/reconftw.sh"
+    if command -v python3 >/dev/null 2>&1; then
+        RTW_HOME_PERSIST="$rtw_home" python3 - <<'PY' \
+            || echo "[!] could not persist rtw_home to ~/.bughunter/config.json"
+import json
+import os
+from pathlib import Path
+
+cfg_path = Path(os.environ.get("BUGHUNTER_CONFIG_FILE")
+                or Path.home() / ".bughunter" / "config.json")
+try:
+    cfg = json.loads(cfg_path.read_text())
+    if not isinstance(cfg, dict):
+        cfg = {}
+except (OSError, ValueError):
+    cfg = {}
+cfg["rtw_home"] = os.environ["RTW_HOME_PERSIST"]
+cfg_path.parent.mkdir(parents=True, exist_ok=True)
+fd = os.open(str(cfg_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(json.dumps(cfg, indent=2))
+os.chmod(str(cfg_path), 0o600)
+print(f"[+] rtw_home persisted to {cfg_path}")
+PY
+    fi
     # Build the single source of truth every runtime reads.
     if command -v python3 >/dev/null 2>&1; then
         python3 "$(cd "$(dirname "$0")" && pwd)/bughunter/tools/capability_registry.py" --rebuild --banner \

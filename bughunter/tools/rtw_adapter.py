@@ -658,6 +658,80 @@ def format_health_table(manifest: dict) -> str:
 
 # ── The six-step flow ─────────────────────────────────────────────────────────
 
+def _remove_path(p: Path) -> None:
+    """Delete a file/symlink/dir tree, never raising."""
+    try:
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        elif p.exists() or p.is_symlink():
+            p.unlink()
+    except OSError:
+        pass
+
+
+def _reconftw_domain(target: str) -> str:
+    """The $domain reconftw.sh derives from -d: scheme, path, port stripped.
+    Empty/unsafe values disable the Recon bridge entirely."""
+    t = (target or "").strip()
+    if "://" in t:
+        t = t.split("://", 1)[1]
+    t = t.split("/", 1)[0].split(":", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    t = t.rstrip(".").lower()
+    if not t or t in (".", "..") or "/" in t or "\\" in t:
+        return ""
+    return t
+
+
+def _bridge_recon_dir(target: str, workdir: Path) -> Tuple[Optional[Path],
+                                                           Optional[Path]]:
+    """reconftw.sh -c hardcodes dir="${SCRIPTPATH}/Recon/$domain" (upstream
+    commit 3925211, line 858) and IGNORES `-o <workdir>` — every delegated
+    function ran inside an empty directory and never saw the seeded inputs.
+    Bridge it: for the duration of the subprocess call,
+    <RTW_HOME>/Recon/<domain> is a symlink to <workdir>. A pre-existing path
+    at that spot is renamed aside (lightweight lock via PID-suffixed backup)
+    and restored by the caller's finally. Returns (link, backup); either may
+    be None. Never raises — a broken bridge degrades to upstream behavior."""
+    try:
+        domain = _reconftw_domain(target)
+        if not domain:
+            return None, None
+        recon_root = rtw_home() / "Recon"
+        recon_root.mkdir(parents=True, exist_ok=True)
+        link = recon_root / domain
+        if link.is_symlink() and link.resolve() == workdir.resolve():
+            return link, None          # already bridged to this workdir
+        backup = None
+        if link.is_symlink() or link.exists():
+            backup = link.with_name(f"{link.name}.abh-bak-{os.getpid()}")
+            _remove_path(backup)
+            link.rename(backup)
+        os.symlink(workdir, link)
+        return link, backup
+    except OSError:
+        return None, None
+
+
+def _unbridge_recon_dir(link: Optional[Path], backup: Optional[Path],
+                        workdir: Path) -> None:
+    """Tear down the Recon/<domain> symlink (only while it still points at
+    OUR workdir) and restore anything renamed aside. Never raises."""
+    if link is None:
+        return
+    try:
+        if link.is_symlink():
+            try:
+                points_at_ours = link.resolve() == Path(workdir).resolve()
+            except OSError:
+                points_at_ours = False
+            if points_at_ours:
+                link.unlink()
+        if backup is not None and backup.exists() and not link.exists():
+            backup.rename(link)
+    except OSError:
+        pass
+
+
 def run_capability(capability_id: str, target: str,
                    recon_dir: Optional[Path] = None,
                    scope_domains: Optional[List[str]] = None,
@@ -756,6 +830,13 @@ def run_capability(capability_id: str, target: str,
     child_env["SCRIPTPATH"] = str(rtw_script().parent)
     started_iso = _utcnow()
     t0 = time.time()
+    # Step 3 fix: reconftw.sh -c ignores -o and hardcodes
+    # ${SCRIPTPATH}/Recon/$domain. Pre-create the bookkeeping files the
+    # single-function mode appends to, bridge the seeded workdir in via
+    # <RTW_HOME>/Recon/<domain>, and ALWAYS tear the bridge down again.
+    (workdir / ".log").touch(exist_ok=True)
+    (workdir / ".called_fn").touch(exist_ok=True)
+    recon_link, recon_backup = _bridge_recon_dir(target, workdir)
     try:
         proc = subprocess.run(
             argv, shell=False, cwd=str(workdir), env=child_env,
@@ -781,6 +862,10 @@ def run_capability(capability_id: str, target: str,
         save_manifest(target, manifest)
         return _result(RESULT_FAILED, capability_id, target, digest=digest,
                        entry=entry, reason=f"subprocess error: {exc}")
+    finally:
+        # <RTW_HOME>/Recon/ stays clean across runs: the bridge symlink is
+        # removed and any pre-existing path renamed aside is restored.
+        _unbridge_recon_dir(recon_link, recon_backup, workdir)
 
     if rc != 0:
         # Live-run fix: a failed function produced nothing. Never publish or
