@@ -33,15 +33,22 @@ SCOPE = ["*.goodscope.example"]
 
 STUB_RECONFTW = """#!/bin/bash
 # stub: single-function mode. Proves the Recon/<domain> bridge is visible:
-# reconftw.sh -c reads ${SCRIPTPATH}/Recon/$domain (hardcoded upstream).
+# reconftw.sh -c reads ${SCRIPTPATH}/Recon/$domain (hardcoded upstream) and
+# appends into $dir/.log/_.txt + $dir/.called_fn/.status_<fn> — BOTH are
+# directories upstream; a file at either path failed the live run with
+# `Not a directory`.
 rtw_dom="$2"
 out=""
 while [[ $# -gt 0 ]]; do case "$1" in -o) out="$2";; esac; shift; done
 mkdir -p "$out/subdomains"
+if [[ -d "$out/.log" && -d "$out/.called_fn" ]]; then
+    echo "https://dirsok.goodscope.example/precheck" >> "$out/subdomains/rtw_precheck.txt"
+fi
 sed 's/^/seen-/' "${SCRIPTPATH}/Recon/${rtw_dom}/subdomains/subdomains.txt" \\
     > "$out/subdomains/rtw_out.txt" 2>/dev/null || true
-echo "CAP_DNS_PERMUT" >> "$out/.called_fn" 2>/dev/null || true
-echo "stub ran" >> "$out/.log" 2>/dev/null || true
+echo "https://status.goodscope.example/CAP_DNS_PERMUT" \\
+    >> "$out/.called_fn/.status_CAP_DNS_PERMUT" 2>/dev/null || true
+echo "https://log.goodscope.example/stub-ran" >> "$out/.log/_.txt" 2>/dev/null || true
 exit 0
 """
 
@@ -90,15 +97,53 @@ class TestReconDirBridge:
         # The stub transformed the seeded file THROUGH the bridge symlink.
         seen = (workdir / "subdomains" / "rtw_out.txt").read_text()
         assert "seen-seed.goodscope.example" in seen
-        # Bookkeeping files pre-created by the adapter (upstream -c appends
-        # the function name to .called_fn and logs to .log; the post-call
-        # scope filter intentionally strips non-scope lines from harvested
-        # copies, so only existence is asserted here).
-        assert (workdir / ".log").is_file()
-        assert (workdir / ".called_fn").is_file()
+        # Regression (live rhodawkai.com run): .log/.called_fn must be
+        # DIRECTORIES before reconftw.sh runs — upstream appends
+        # .called_fn/.status_<fn> and .log/_.txt into them; a file at either
+        # path failed with `Not a directory`.
+        assert (workdir / ".log").is_dir()
+        assert (workdir / ".called_fn").is_dir()
+        status_file = workdir / ".called_fn" / ".status_CAP_DNS_PERMUT"
+        # In-scope marker lines survive the post-call scope filter; the
+        # file PATHS under .called_fn/.log prove the writes went into
+        # directories, not files.
+        assert "CAP_DNS_PERMUT" in status_file.read_text()
+        assert "stub-ran" in (workdir / ".log" / "_.txt").read_text()
         # Recon/ is clean again — no leftover bridge symlink.
         link = step3_env["rtw_home"] / "Recon" / TARGET
         assert not link.exists() and not link.is_symlink()
+
+    def test_bookkeeping_dirs_exist_before_reconftw_runs(self, step3_env):
+        """The stub's `dirs-ok` precheck proves <workdir>/.log and
+        <workdir>/.called_fn are already directories BEFORE reconftw.sh
+        executes — the exact live failure seen on rhodawkai.com
+        (`Recon/<domain>/.log/_.txt: Not a directory`)."""
+        result = _run_cap(step3_env)
+        assert result["status"] == "COMPLETED_WITH_FINDINGS", result
+        workdir = Path(result["entry"]["workdir"])
+        precheck = workdir / "subdomains" / "rtw_precheck.txt"
+        assert precheck.is_file(), \
+            ".log/.called_fn were not directories before reconftw.sh ran"
+        assert "dirsok.goodscope.example/precheck" in precheck.read_text()
+        assert (workdir / ".log").is_dir()
+        assert (workdir / ".called_fn").is_dir()
+
+    def test_stale_file_at_bookkeeping_path_becomes_dir(
+            self, tmp_path, monkeypatch):
+        """Older releases created .log/.called_fn as FILES; the helper must
+        replace any stale file or symlink with a real directory."""
+        monkeypatch.setenv("RTW_HOME", str(tmp_path / "rtw"))
+        (tmp_path / "rtw").mkdir()
+        stale = tmp_path / "wd" / ".log"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("old file junk\n")
+        adp._ensure_rtw_bookkeeping_dir(stale)
+        assert stale.is_dir() and not stale.is_file()
+        dangling = tmp_path / "wd2" / ".called_fn"
+        dangling.parent.mkdir(parents=True)
+        dangling.symlink_to(tmp_path / "nowhere")
+        adp._ensure_rtw_bookkeeping_dir(dangling)
+        assert dangling.is_dir() and not dangling.is_symlink()
 
     def test_preexisting_symlink_restored(self, step3_env):
         link = step3_env["rtw_home"] / "Recon" / TARGET

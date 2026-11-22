@@ -278,6 +278,23 @@ class TestCliScopeGate:
         assert "Phase 1.5" in out  # the (skipped) phase header still prints
         assert not rtw_env["marker"].is_file()
 
+    def test_rtw_home_loaded_from_config_json(self, rtw_env, monkeypatch):
+        """Live-run fix: fresh shells no longer need `export RTW_HOME=...`.
+        With RTW_HOME unset the engine reads rtw_home from
+        ~/.bughunter/config.json (persisted by install.sh) at the top of the
+        script and Phase 1.5/5.5 delegation still runs."""
+        monkeypatch.delenv("RTW_HOME", raising=False)
+        cfg = rtw_env["home"].parent / ".bughunter" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps({"rtw_home": str(rtw_env["home"].parent / "rtw")}))
+        monkeypatch.setenv("BUGHUNTER_CONFIG_FILE", str(cfg))
+        proc = run_engine([TARGET, "--scope-domain", SCOPE[0]])
+        out = proc.stdout + proc.stderr
+        assert proc.returncode == 0, out[-3000:]
+        assert rtw_env["marker"].is_file(), \
+            "gap-fill must run via rtw_home from config.json (RTW_HOME unset)"
+        assert "gap-fill not configured" not in out
+
     def test_comma_separated_scope_patterns(self, rtw_env):
         """Repeatable + comma-separated patterns both work."""
         proc = run_engine([TARGET,

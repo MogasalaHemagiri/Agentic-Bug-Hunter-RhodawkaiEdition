@@ -669,6 +669,20 @@ def _remove_path(p: Path) -> None:
         pass
 
 
+def _ensure_rtw_bookkeeping_dir(path: Path) -> None:
+    """reconftw.sh -c appends into .log/_.txt and .called_fn/.status_<fn>:
+    BOTH bookkeeping paths are DIRECTORIES upstream. A plain file at either
+    path (created by older releases) failed the live rhodawkai.com run with
+    `Recon/<domain>/.log/_.txt: Not a directory` — replace any stale
+    file/symlink with a real directory first. Never raises."""
+    try:
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            path.unlink()
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+
 def _reconftw_domain(target: str) -> str:
     """The $domain reconftw.sh derives from -d: scheme, path, port stripped.
     Empty/unsafe values disable the Recon bridge entirely."""
@@ -831,11 +845,12 @@ def run_capability(capability_id: str, target: str,
     started_iso = _utcnow()
     t0 = time.time()
     # Step 3 fix: reconftw.sh -c ignores -o and hardcodes
-    # ${SCRIPTPATH}/Recon/$domain. Pre-create the bookkeeping files the
-    # single-function mode appends to, bridge the seeded workdir in via
-    # <RTW_HOME>/Recon/<domain>, and ALWAYS tear the bridge down again.
-    (workdir / ".log").touch(exist_ok=True)
-    (workdir / ".called_fn").touch(exist_ok=True)
+    # ${SCRIPTPATH}/Recon/$domain. Pre-create the bookkeeping DIRECTORIES the
+    # single-function mode appends into (.log/_.txt, .called_fn/.status_<fn>),
+    # bridge the seeded workdir in via <RTW_HOME>/Recon/<domain> -> <workdir>
+    # (a directory), and ALWAYS tear the bridge down again.
+    _ensure_rtw_bookkeeping_dir(workdir / ".log")
+    _ensure_rtw_bookkeeping_dir(workdir / ".called_fn")
     recon_link, recon_backup = _bridge_recon_dir(target, workdir)
     try:
         proc = subprocess.run(
