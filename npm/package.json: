@@ -1,0 +1,39 @@
+{
+  "name": "agentic-bug-hunter-rhodawkai-edition",
+  "version": "6.1.1",
+  "description": "CLI wrapper for Agentic-Bug-Hunter (RhodawkAI Edition) — fail-closed, CDN-aware autonomous bug bounty reconnaissance & attack-surface prioritization.",
+  "license": "MIT",
+  "author": "RhodawkAI <manager@rhodawkai.com>",
+  "homepage": "https://rhodawkai.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition.git",
+    "directory": "npm"
+  },
+  "bugs": {
+    "url": "https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition/issues"
+  },
+  "keywords": [
+    "security",
+    "bug-bounty",
+    "recon",
+    "pentest",
+    "ai-agent",
+    "mcp",
+    "nvidia-nim",
+    "ollama",
+    "rhodawkai"
+  ],
+  "bin": {
+    "rhodawk": "./bin/rhodawk.js",
+    "bughunter": "./bin/rhodawk.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
