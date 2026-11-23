@@ -1,61 +1,51 @@
-# Contributing
+# Contributing to Agentic-Bug-Hunter — RhodawkAI Edition
 
-Bug hunters welcome. Every improvement here makes real hunts more effective.
+Bug hunters and security engineers welcome. Every improvement here makes autonomous, fail-closed reconnaissance and validation more reliable in real engagements[span_1](start_span)[span_1](end_span).
 
-## What We Most Need
+---
+
+## 🎯 What We Most Need
 
 | Contribution | Why It Matters |
-|:---|:---|
-| New scanner modules or detection techniques | Increases surface coverage |
-| Payload additions to `skills/security-arsenal/SKILL.md` | Better bypass coverage |
-| Methodology improvements backed by paid reports | Proven techniques only |
-| Platform support (YesWeHack · Synack · HackenProof) | Wider program coverage |
-| False positive fixes with regression tests | Community's top complaint |
+| :--- | :--- |
+| **Fail-closed scope & CDN/origin isolation improvements** | Keeps active probing strictly on first-party origins (`0` packets on OOS / CDN edges) |
+| **Bounded `reconFTW` `-c <fn>` gap-fillers & adapters** | Expands recon depth without monolithic hangs or silent failures |
+| **Deterministic PoC validators & false-positive fixes** | Eliminates hallucinated or unverified findings with regression tests[span_2](start_span)[span_2](end_span) |
+| **Open-weight AI provider tuning (NVIDIA NIM / Ollama)** | Improves `recon_brief.md` prioritization with zero closed-model lock-in |
+| **New scanner modules & payload additions** | Increases real-world vulnerability coverage backed by proven PoCs[span_3](start_span)[span_3](end_span) |
+| **Platform & scope-ingestion support (YesWeHack · Synack · Intigriti)** | Wider authorized program coverage[span_4](start_span)[span_4](end_span) |
 
-## Before You Start
+---
 
-1. **Check open issues** — your idea may already be in progress
-2. **One feature per PR** — keeps review fast and clean
-3. **Test your changes** — run `pytest tests/` before opening the PR
-4. **No theoretical bugs** — if it's a scanner addition, it must have a real PoC or real-world precedent
+## ✅ Before You Start
 
-## Workflow
+1. **Check open issues & discussions** — your idea may already be in progress[span_5](start_span)[span_5](end_span).
+2. **One focused change per PR** — keeps review fast and CI clean[span_6](start_span)[span_6](end_span).
+3. **Run the full local verification suite** — both `pytest -q` and shell syntax checks (`bash -n`) must pass before opening a PR.
+4. **No theoretical bugs or silent failures** — scanner additions must have a real PoC or precedent[span_7](start_span)[span_7](end_span), and every tool wrapper must report honest `tool_health` status.
+5. **Respect fail-closed scope** — never bypass `--scope-domain` or delegate `modules/vulns.sh` to `reconFTW`.
+
+---
+
+## 🚀 Workflow
 
 ```bash
-# 1. Fork and clone
-git clone https://github.com/YOUR_USERNAME/Agentic-Bug-Hunter.git
-cd Agentic-Bug-Hunter
+# 1. Fork the repo on GitHub, then clone your fork
+git clone [https://github.com/YOUR_USERNAME/Agentic-Bug-Hunter-RhodawkaiEdition.git](https://github.com/YOUR_USERNAME/Agentic-Bug-Hunter-RhodawkaiEdition.git)
+cd Agentic-Bug-Hunter-RhodawkaiEdition
 
-# 2. Create a branch
+# 2. Create a feature or fix branch
 git checkout -b feat/your-contribution
 
-# 3. Make your changes, run tests
-pytest tests/
+# 3. Make your changes, then run the exact CI checks locally
+bash -n bughunter/tools/recon_engine.sh install.sh install_tools.sh
+pytest -q
 
-# 4. Commit
+# 4. (Optional) Verify local environment health
+rhodawk doctor
+
+# 5. Commit using conventional format
 git commit -m "feat: short description of what and why"
 
-# 5. Push and open PR
+# 6. Push and open a Pull Request against Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition (main)
 git push origin feat/your-contribution
-```
-
-## Commit Message Format
-
-```
-feat:  new capability
-fix:   bug fix
-docs:  documentation only
-test:  adding or fixing tests
-chore: maintenance (deps, CI, cleanup)
-```
-
-## PR Checklist
-
-- [ ] Tests pass (`pytest tests/`)
-- [ ] No hardcoded targets, API keys, or real domain names in code
-- [ ] Scanner additions use `[CONFIRMED]` / `[POSSIBLE]` / `[INFORMATIONAL]` confidence states
-- [ ] Methodology changes are backed by a real finding or public write-up
-
-## Questions?
-
-Open a [GitHub Discussion](https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition/discussions) or reach out at [hello@rhodawkai.com](mailto:hello@rhodawkai.com).
