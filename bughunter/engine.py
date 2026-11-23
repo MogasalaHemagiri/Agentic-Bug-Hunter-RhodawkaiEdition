@@ -1156,7 +1156,7 @@ def _print_banner():
         print(f"{color}{line}{NC}")
     print()
     print(f"  {G3}by {W}RhodawkAI{NC}  {G3}·{NC}  {G2}rhodawkai.com{NC}")
-    print(f"  {G3}github.com/{G2}MogasalaHemagiri{G3}/Agentic-Bug-Hunter-RhodawkaiEdition{NC}")
+    print(f"  {G3}github.com/{G2}Rhodawk-AI{G3}/Agentic-Bug-Hunter-RhodawkaiEdition{NC}")
     print(f"  {G3}free · open · no subscription required{NC}")
     print()
 

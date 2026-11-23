@@ -11,11 +11,14 @@ This does **not** replace:
 ## Install (any MCP client)
 
 ```bash
-pip install agentic-bug-hunter
+git clone https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition.git
+cd Agentic-Bug-Hunter-RhodawkaiEdition
+pip install -r requirements.txt && ./install.sh --agent mcp
 ```
 
-That installs the `bughunter` command. The MCP server runs as `bughunter mcp serve`,
-so the same config works from any directory in any MCP-compatible agent.
+That installs the `bughunter` command (and the `rhodawk` brand alias). The MCP server
+runs as `bughunter mcp serve`, so the same config works from any directory in any
+MCP-compatible agent.
 
 ```bash
 bughunter mcp doctor   # verify SDK, tools, and paths
@@ -24,7 +27,7 @@ bughunter mcp tools    # list the exposed tool catalog
 
 ## Clients
 
-Add this to your client's MCP config (works after `pip install`, no repo checkout needed):
+Add this to your client's MCP config (works after the install above):
 
 ```json
 {
@@ -42,7 +45,7 @@ Add this to your client's MCP config (works after `pip install`, no repo checkou
 - **Cursor / Cline / Windsurf / Zed**: same `command` + `args` in their MCP settings
 - **OpenCode**: see `opencode-config.json`
 
-Running from a cloned repo instead of pip? Use `python3 mcp/bughunter-mcp/server.py`.
+Running without the installer? Use `python3 bughunter/mcp/bughunter-mcp/server.py`.
 
 ## Safety
 

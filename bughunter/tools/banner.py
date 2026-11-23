@@ -48,7 +48,7 @@ _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _NC = "\033[0m"
 
-_TAG = "rhodawkai.com  ·  github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition"
+_TAG = "rhodawkai.com  ·  github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition"
 
 
 def _use_color(stream) -> bool:
