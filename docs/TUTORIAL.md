@@ -32,7 +32,7 @@ scanner available and skips the rest gracefully.
 ## A. Install (30 sec)
 
 ```bash
-git clone https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition.git
+git clone https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition.git
 cd Agentic-Bug-Hunter
 chmod +x install.sh && ./install.sh
 ```

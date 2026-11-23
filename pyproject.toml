@@ -28,9 +28,9 @@ dependencies = [
 test = ["pytest>=8.3.2"]
 
 [project.urls]
-Homepage = "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition"
-Repository = "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition"
-Issues = "https://github.com/MogasalaHemagiri/Agentic-Bug-Hunter-RhodawkaiEdition/issues"
+Homepage = "https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition"
+Repository = "https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition"
+Issues = "https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition/issues"
 
 [project.scripts]
 bughunter = "bughunter.__main__:main"
