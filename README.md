@@ -11,23 +11,23 @@
 [![NVIDIA NIM](https://img.shields.io/badge/NVIDIA_NIM-Open_Weights-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition#-open-weight--multi-provider-ai)
 [![Ollama](https://img.shields.io/badge/Ollama-100%25_Local-000000?style=for-the-badge&logo=ollama&logoColor=white)](https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition#-open-weight--multi-provider-ai)
 
-**[Demo](#-live-demo-1080p) · [What Is This](#-what-is-this) · [Benchmark](#-head-to-head-benchmark) · [Quick Start](#-quick-start-5-commands) · [AI Providers](#-open-weight--multi-provider-ai) · [reconFTW Delegation](#-deterministic-reconftw-delegation) · [Commands & MCP](#-cli-commands-mcp--project-structure) · [Acknowledgments](#-acknowledgments--branded-footer)**
+**[Demo](#-live-demo) · [What Is This](#-what-is-this) · [Benchmark](#-head-to-head-benchmark) · [Quick Start](#-quick-start-5-commands) · [AI Providers](#-open-weight--multi-provider-ai) · [reconFTW Delegation](#-deterministic-reconftw-delegation) · [Commands & MCP](#-cli-commands-mcp--project-structure) · [Acknowledgments](#-acknowledgments--branded-footer)**
 
 </div>
 
 ---
 
-## 🎬 Live Demo (1080p)
+## 🎬 Live Demo
 
-<div align="center">
+<p align="center">
+  <img src="assets/rhodawk-demo.gif" alt="RhodawkAI Edition Live Terminal Demo" width="100%"/>
+</p>
 
-<video src="assets/rhodawk-demo-1080p.mp4" controls muted preload="metadata" width="100%"></video>
-
-*If your renderer strips inline video: [▶ watch / download the full 1080p clip](assets/rhodawk-demo-1080p.mp4)*
-
-</div>
-
-*Recorded live on an 8-vCPU Ubuntu VPS: `rhodawk doctor` (`0 FAIL`, `<5s`) → fail-closed OOS scope block (`0` packets) → live CDN-aware recon on `rhodawkai.com` → canonical `recon_truth.json` + NVIDIA NIM `recon_brief.md`.*
+<p align="center">
+  <em>Recorded live on an 8-vCPU Ubuntu VPS: <code>rhodawk doctor</code> (<code>0 FAIL</code>, <code>&lt;5s</code>) → fail-closed OOS scope block (<code>0</code> packets) → live CDN-aware recon on <code>rhodawkai.com</code> → canonical <code>recon_truth.json</code> + NVIDIA NIM <code>recon_brief.md</code>.</em>
+  <br/>
+  <a href="assets/rhodawk-demo-1080p.mp4">▶ Download / Watch Full 1080p MP4</a>
+</p>
 
 ---
 
