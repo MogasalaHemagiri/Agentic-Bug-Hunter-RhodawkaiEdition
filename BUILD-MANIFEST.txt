@@ -1,0 +1,82 @@
+Agentic-Bug-Hunter — RhodawkAI Edition (v6.1.0)
+================================================
+
+WHAT THIS ARCHIVE IS
+--------------------
+The COMPLETE source tree of Agentic-Bug-Hunter with the RhodawkAI Edition
+integration applied — every file from upstream is included, not a patch or a
+delta. 454 of the 461 files in this archive are byte-identical to upstream
+agentic-bug-hunter at the pinned commit; the remaining 23 are listed below.
+
+Base project:  awarexone/agentic-bug-hunter
+Base commit:   82f4512ec432765297c36e6b3ef7dc3fe5a58be2  (upstream 6.0.1)
+Fork edition:  agentic-bug-hunter-rhodawkai-edition 6.1.0
+
+Integration tested against (cloned separately by ./install.sh into RTW_HOME,
+default ~/Tools/reconftw — NOT included in this archive):
+  six2dez/reconftw @ 39252113a854bdac0b785f144b9fae1fa8ca35fc
+
+The one functional addition: wherever ABH's own recon pipeline hits a
+capability it doesn't have, it delegates to reconFTW's equivalent function —
+deterministically (capability_registry.py + rtw_adapter.py), in all four
+runtimes (CLI engine, ReAct agent, interactive harness, MCP server), fail-closed
+on scope, with modules/vulns.sh never delegated. See the "RhodawkAI Edition"
+lead section of README.md and CHANGELOG.md for the full capability map.
+
+FILES MODIFIED vs UPSTREAM (17)
+-------------------------------
+CHANGELOG.md                          Edition changelog entry + version notes
+README.md                             RhodawkAI Edition lead section + capability table
+go.mod                                Fork-edition comment (module path unchanged)
+pyproject.toml                        name agentic-bug-hunter-rhodawkai-edition, version 6.1.0
+install.sh                            Post-dispatch reconFTW pinned-clone + capabilities.json rebuild
+install_tools.sh                      --rtw-deps mode (pinned per-capability go-install only)
+bughunter/agent.py                    run_rtw_capability tool schema (7-ID enum), dispatch branch,
+                                      NETWORK_TOOLS/TOOL_METHODS, AGENT_SYSTEM rule 3
+bughunter/engine.py                   recon/hunt --scope-domain/--scope-exclude/--no-scope-check flags
+                                      forwarded to recon_engine.sh
+bughunter/tools/hunt.py               run_recon forwards active ScopeChecker patterns to recon_engine.sh
+bughunter/tools/recon_engine.sh       Flag parsing (scope flags, --normalize-only preserved),
+                                      Phase 1.5 + Phase 5.5 gap-fill with merges, Summary block
+bughunter/agents/recon-agent.md       reconFTW Gap-Fill section (same rule wording as agent.py)
+commands/recon.md                     reconFTW Gap-Fill section + rtw/ output dir in tree
+skills/web2-recon/SKILL.md            reconFTW GAP-FILL section with capability map
+docs/CAPABILITY-GAPS.md               Recon gaps marked closed via delegation + guardrails
+bughunter/mcp/bughunter-mcp/server.py bughunter_run_rtw_capability MCP tool (26th tool)
+bughunter/mcp/bughunter-mcp/adapters.py
+                                      run_rtw_capability adapter + scope forwarding in run_recon
+bughunter/mcp/bughunter-mcp/policy/tool_meta.py
+                                      Policy metadata for the new MCP tool (scope+approval required)
+
+FILES ADDED (6)
+---------------
+bughunter/tools/capability_registry.py  Boot-time tool binding -> ~/.bughunter/capabilities.json
+                                        {capability_id: NATIVE|RTW_AVAILABLE|RTW_MISSING_DEPS}
+bughunter/tools/rtw_adapter.py          Deterministic six-step delegation + rtw_manifest.json
+tests/test_rtw_capability.py            28 unit tests (registry + adapter acceptance criteria)
+tests/test_recon_engine_rtw.py          11 engine-level tests (pipeline order, CLI scope gate, merges)
+tests/test_mcp_rtw.py                   9 MCP runtime tests (policy gate + shared manifest schema)
+tests/test_agent_rtw_dispatch.py        5 ReAct-dispatch runtime tests (guard + shared schema)
+
+TEST STATUS (run from the archive root)
+---------------------------------------
+- Full ABH pytest suite: 1211 passed, 1 skipped, 0 failed
+  (the skip is the MCP-server live import, unavailable MCPServer API in the
+  build sandbox; its wiring is statically verified instead)
+- reconFTW bats --unit suite at the pinned commit: passed
+- Acceptance script (pipeline order, real-reconftw interface, 4-runtime
+  parity): 27/27 checks passed
+
+QUICK START
+-----------
+  unzip agentic-bug-hunter-rhodawkai-edition-6.1.0.zip
+  cd agentic-bug-hunter-rhodawkai-edition-6.1.0
+  ./install.sh                        # installs ABH + clones reconFTW pinned
+  bash install_tools.sh               # ABH-native tools
+  bash install_tools.sh --rtw-deps    # the 7 gap-fill capabilities' binaries only
+  python3 bughunter/tools/capability_registry.py --banner
+
+  # Recon with gap-fill (scope patterns are forwarded to the adapter):
+  bughunter recon target.com --scope-domain "*.target.com"
+
+  # Without RTW_HOME set, everything behaves exactly as upstream ABH.
