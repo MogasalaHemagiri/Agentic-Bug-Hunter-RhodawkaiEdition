@@ -66,14 +66,18 @@ All three runners, same target (`rhodawkai.com`), same 8-vCPU / 32 GB Ubuntu VPS
 
 ## 🚀 Quick Start (5 Commands)
 
+
  # Python / PyPI (Recommended on Ubuntu 24.04 / Debian 12 / Kali)
+```bash
 pipx install agentic-bug-hunter-rhodawkai-edition
 
+```
 # Node.js / npm (CLI wrapper around the PyPI package)
+``` bash
 npm install -g agentic-bug-hunter-rhodawkai-edition
 # or run directly:
 npx agentic-bug-hunter-rhodawkai-edition doctor
-
+```
 
 ```bash
 # 1. Clone the brand repo + install the standalone agent (no subscription needed)
