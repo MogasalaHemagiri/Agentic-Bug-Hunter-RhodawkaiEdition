@@ -7,7 +7,7 @@
   "homepage": "https://rhodawkai.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition.git",
+    "url": "git+https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition.git",
     "directory": "npm"
   },
   "bugs": {
@@ -25,8 +25,8 @@
     "rhodawkai"
   ],
   "bin": {
-    "rhodawk": "./bin/rhodawk.js",
-    "bughunter": "./bin/rhodawk.js"
+    "rhodawk": "bin/rhodawk.js",
+    "bughunter": "bin/rhodawk.js"
   },
   "files": [
     "bin/",
