@@ -10,6 +10,9 @@
 [![GitHub Stars](https://img.shields.io/github/stars/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition?style=for-the-badge&color=F59E0B)](https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition/stargazers)
 [![NVIDIA NIM](https://img.shields.io/badge/NVIDIA_NIM-Open_Weights-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition#-open-weight--multi-provider-ai)
 [![Ollama](https://img.shields.io/badge/Ollama-100%25_Local-000000?style=for-the-badge&logo=ollama&logoColor=white)](https://github.com/Rhodawk-AI/Agentic-Bug-Hunter-RhodawkaiEdition#-open-weight--multi-provider-ai)
+[![PyPI](https://img.shields.io/pypi/v/agentic-bug-hunter-rhodawkai-edition?style=for-the-badge&logo=pypi&logoColor=white&color=3775A9)](https://pypi.org/project/agentic-bug-hunter-rhodawkai-edition/)
+[![npm](https://img.shields.io/npm/v/agentic-bug-hunter-rhodawkai-edition?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/agentic-bug-hunter-rhodawkai-edition)
+
 
 **[Demo](#-live-demo) · [What Is This](#-what-is-this) · [Benchmark](#-head-to-head-benchmark) · [Quick Start](#-quick-start-5-commands) · [AI Providers](#-open-weight--multi-provider-ai) · [reconFTW Delegation](#-deterministic-reconftw-delegation) · [Commands & MCP](#-cli-commands-mcp--project-structure) · [Acknowledgments](#-acknowledgments--branded-footer)**
 
@@ -62,6 +65,15 @@ All three runners, same target (`rhodawkai.com`), same 8-vCPU / 32 GB Ubuntu VPS
 ---
 
 ## 🚀 Quick Start (5 Commands)
+
+ # Python / PyPI (Recommended on Ubuntu 24.04 / Debian 12 / Kali)
+pipx install agentic-bug-hunter-rhodawkai-edition
+
+# Node.js / npm (CLI wrapper around the PyPI package)
+npm install -g agentic-bug-hunter-rhodawkai-edition
+# or run directly:
+npx agentic-bug-hunter-rhodawkai-edition doctor
+
 
 ```bash
 # 1. Clone the brand repo + install the standalone agent (no subscription needed)
