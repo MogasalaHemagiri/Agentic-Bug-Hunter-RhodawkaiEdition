@@ -12,8 +12,8 @@
 
 If you find a security issue in this toolkit itself (not a bug bounty finding on a third-party target), please **do not open a public GitHub issue**.
 
-**Email:** [shuvon@rhodawkai.com](mailto:shuvon@rhodawkai.com)  
-**CC / general:** [hello@rhodawkai.com](mailto:hello@rhodawkai.com)  
+**Email:** [founder@rhodawkai.com](mailto:founder@rhodawkai.com)  
+**CC / general:** [manager@rhodawkai.com](mailto:manager@rhodawkai.com)  
 **Subject line:** `[SECURITY] Brief description`
 
 Include:
